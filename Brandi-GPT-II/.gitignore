@@ -1,0 +1,6 @@
+# Ignore personal dev notes
+instructions.md
+.venv
+*.pth
+gpt2/
+*.pyc
