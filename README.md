@@ -1,3 +1,3 @@
 # ARC-AGI-Model
 
-Authors: Eli Holm, Brandon Gomes, Chetan
+Authors: Eli Holm, Chetan Vanteddu, Brandon Gomes
