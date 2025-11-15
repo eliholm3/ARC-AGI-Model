@@ -8,9 +8,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 # ========= EDIT THESE IF YOU WANT DIFFERENT FILENAMES =========
-REAL_FILE  = "real_groups.json"
-GUESS_FILE = "guess_groups.json"
-OUT_DIR    = "out"
+TASK_FILE = "Curve-BallDatasetTasks/example06.json"
+OUT_DIR   = "Curve-BallDatasetTasks_Images"
 # ==============================================================
 
 # Rendering params
@@ -57,12 +56,9 @@ def _pad_to(g: np.ndarray, H: int, W: int, fill: int = -1) -> np.ndarray:
     out[:g.shape[0], :g.shape[1]] = g
     return out
 
-# -------- loading: EXACT schema you posted --------
+ # -------- loading: legacy group format (kept for backward compatibility) --------
 def _load_groups(path: Path) -> Dict[str, List[List[List[int]]]]:
-    """
-    Load your "group_id -> [grid, grid, ...]" mapping.
-    Accepts also a superset: if a value is a single grid, we wrap it in a list.
-    """
+    """Legacy loader: group_id -> [grid, grid, ...]."""
     obj = json.loads(path.read_text())
     if not isinstance(obj, dict):
         raise ValueError(f"{path} must be a JSON object mapping group_id -> list-of-2D-grids.")
@@ -110,6 +106,31 @@ def _label_above(img: Image.Image, text: str) -> Image.Image:
     out.paste(strip, (0,0))
     out.paste(img, (0, LABEL_H))
     return out
+
+def _two_panel(input_grid: List[List[int]], output_grid: List[List[int]] | None, left_label: str, right_label: str | None = None) -> Image.Image:
+    """Build a side-by-side panel for a single example.
+
+    If output_grid is None, only the left (input) column is shown.
+    """
+    in_img = _grid_to_image(_normalize_grid(input_grid))
+    in_col = _label_above(in_img, left_label)
+
+    if output_grid is None:
+        return in_col
+
+    out_img = _grid_to_image(_normalize_grid(output_grid))
+    out_col = _label_above(out_img, right_label or "Output")
+
+    h = max(in_col.height, out_col.height)
+    w = in_col.width + COL_GAP + out_col.width
+    canvas = Image.new("RGB", (w, h), BG_COLOR)
+
+    y_in = (h - in_col.height) // 2
+    y_out = (h - out_col.height) // 2
+
+    canvas.paste(in_col, (0, y_in))
+    canvas.paste(out_col, (in_col.width + COL_GAP, y_out))
+    return canvas
 
 def _triple_panel(guess: List[List[int]], real: List[List[int]]) -> Image.Image:
     g_img = _grid_to_image(_normalize_grid(guess))
@@ -164,41 +185,42 @@ def _write_png(img: Image.Image, path: Path) -> str:
 
 def main():
     here = Path(__file__).resolve().parent
-    real_path  = here / REAL_FILE
-    guess_path = here / GUESS_FILE
+    task_path = Path(TASK_FILE)
+    if not task_path.is_absolute():
+        task_path = here / task_path
 
-    # load both as group_id -> [grid, grid, ...]
-    real_groups  = _load_groups(real_path)
-    guess_groups = _load_groups(guess_path)
+    obj = json.loads(task_path.read_text())
+    if not isinstance(obj, dict) or "train" not in obj or "test" not in obj:
+        raise SystemExit(f"{task_path} must be an ARC-style JSON with 'train' and 'test'.")
 
-    # union of IDs
-    all_ids = sorted(set(real_groups.keys()) | set(guess_groups.keys()))
-    if not all_ids:
-        raise SystemExit("No groups to render.")
+    rows: List[Image.Image] = []
 
-    for gid in all_ids:
-        r_list = real_groups.get(gid, [])
-        g_list = guess_groups.get(gid, [])
+    # Visualize train pairs: input -> output
+    for i, pair in enumerate(obj.get("train", [])):
+        if not isinstance(pair, dict) or "input" not in pair:
+            continue
+        inp = pair["input"]
+        out = pair.get("output") if _is_grid(pair.get("output", [])) else None
+        label_left = f"train_{i}_input"
+        label_right = f"train_{i}_output" if out is not None else None
+        rows.append(_two_panel(inp, out, label_left, label_right))
 
-        n = max(len(r_list), len(g_list))
-        rows = []
-        for i in range(n):
-            # align by index; if one missing, copy the other's shape and fill zeros
-            if i < len(r_list): r = r_list[i]
-            else:
-                base = g_list[min(i, len(g_list)-1)]
-                r = [[0]*len(base[0]) for _ in range(len(base))]
+    # Visualize test pairs: input (and output if present)
+    for j, pair in enumerate(obj.get("test", [])):
+        if not isinstance(pair, dict) or "input" not in pair:
+            continue
+        inp = pair["input"]
+        out = pair.get("output") if _is_grid(pair.get("output", [])) else None
+        label_left = f"test_{j}_input"
+        label_right = f"test_{j}_output" if out is not None else None
+        rows.append(_two_panel(inp, out, label_left, label_right))
 
-            if i < len(g_list): g = g_list[i]
-            else:
-                base = r_list[min(i, len(r_list)-1)]
-                g = [[0]*len(base[0]) for _ in range(len(base))]
+    if not rows:
+        raise SystemExit("No train/test pairs with valid grids found to render.")
 
-            rows.append(_triple_panel(g, r))
-
-        stacked = _stack_rows(rows)
-        out_path = here / OUT_DIR / f"group_{gid}.png"
-        print("[ok]", _write_png(stacked, out_path))
+    stacked = _stack_rows(rows)
+    out_path = here / OUT_DIR / f"{task_path.stem}.png"
+    print("[ok]", _write_png(stacked, out_path))
 
 if __name__ == "__main__":
     main()
