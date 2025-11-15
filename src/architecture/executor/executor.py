@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from attention import MultiHeadAttention
-from CNNBlock import FiLM, CNNBlock
+from CNNBlock import CNNBlock
 from ..ViT.body import TransformerEncoderBlock
 
 
@@ -46,7 +44,7 @@ class Executor(nn.Module):
         #   Tokenizers   #
         ##################
 
-        self.to_embedding == nn.Linear(hidden_channels, embed_dim)
+        self.to_embedding = nn.Linear(hidden_channels, embed_dim)
 
         # Interpret proposal 
         self.z_token = nn.Linear(z_dim, embed_dim)
@@ -61,10 +59,10 @@ class Executor(nn.Module):
         ])
 
         #######################
-        #   CNN Descretizer   #
+        #   CNN Discretizer   #
         #######################
 
-        self.descretizer = nn.Sequential(
+        self.discretizer = nn.Sequential(
             nn.Conv2d(  # detect features in token
                 embed_dim, 
                 hidden_channels, 
@@ -115,7 +113,7 @@ class Executor(nn.Module):
         tokens = self.to_embedding(x_flat)  # (B, S, D)
 
         # Add proposal z token
-        z_token = self.z_token.unsqueeze(1)  # (B, 1, D) one for each batch
+        z_token = self.z_token(z).unsqueeze(1)  # (B, 1, D) one for each batch
         tokens = torch.cat([z_token, tokens], dim=1)  # (B, 1+S, D)
 
         ################################
@@ -136,10 +134,10 @@ class Executor(nn.Module):
         x_feats = x_tokens.reshape(B, H, W, -1).permute(0, 3, 1, 2)
 
         ##################
-        #   Descretize   #
+        #   Discretize   #
         ##################
 
         # Compute on the embedding dimension
-        logits = self.descretizer(x_feats)  # (B, num_classes, H, W)
+        logits = self.discretizer(x_feats)  # (B, num_classes, H, W)
 
         return logits

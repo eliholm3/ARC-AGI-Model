@@ -80,8 +80,9 @@ class VisionTransformer(nn.Module):
 
         # Prepend context token mask
         if mask is not None:
-            c_mask = torch.ones((mask.size(0), 1), dtype=torch.bool, device=mask.device)
+            c_mask = torch.zeros((mask.size(0), 1), dtype=torch.bool, device=mask.device)
             mask = torch.cat([c_mask, mask], dim=1)  # (B, 1+N)
+            mask = mask.to(torch.bool)
 
         # Convert mask to padding mask
         key_padding_mask = ~mask
@@ -189,7 +190,7 @@ class ConditionalTransformerEncoderBlock(nn.Module):
             mask_test = mask_test.reshape(B, -1)  # (B, H*W=N)
         
         # Project C -> (B, 1, D) (one per batch)
-        C_proj = self.c_proj(C).unsequeeze(1)
+        C_proj = self.c_proj(C).unsqueeze(1)
 
         #############
         #   Embed   #

@@ -119,7 +119,7 @@ class LargeVisionTransformerModel(nn.Module):
         C_token = C.unsqueeze(1)
 
         # Place proposal tokens in each batch
-        proposal_tok = self.proposal_tokens.expend(B, -1, -1)
+        proposal_tok = self.proposal_tokens.expand(B, self.num_proposals, self.embed_dim)
 
         ###################
         #   Build Input   #

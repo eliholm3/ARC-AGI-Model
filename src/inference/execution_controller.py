@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+
 from ..architecture.LViTM.body import LargeVisionTransformerModel
 from ..architecture.executor.executor import Executor
 from ..architecture.adViT.critic import AdversarialVisionTransformer
@@ -13,7 +14,7 @@ class HybridExecuteController(nn.Module):
             lvitm: LargeVisionTransformerModel,
             executor: Executor, 
             cond_encoder: ConditionalTestInputEncoder,
-            critic: AdversarialVisionTransformer = None
+            critic: AdversarialVisionTransformer | None = None
     ):
         ###############################
         #   B = batch size            #    
@@ -27,18 +28,17 @@ class HybridExecuteController(nn.Module):
         self.lvitm = lvitm,
         self.executor = executor
         self.cond_encoder = cond_encoder,
-        self.critic
+        self.critic = critic
 
     ################################
     #   Parallel Mode (Training)   #
     ################################
 
-    @torch.no_grad()
     def apply_parallel(
         self,
-        I_test,  # (B, 1, H, W)
-        mask_test,  # (B, H, W)
-        C,  # (B, D)
+        I_test: torch.Tensor,  # (B, 1, H, W)
+        mask_test: torch.Tensor,  # (B, H, W)
+        C: torch.Tensor,  # (B, D)
         examples=None
     ):
         B, _, H, W = I_test.shape
@@ -53,20 +53,20 @@ class HybridExecuteController(nn.Module):
         # Compute proposals
         Z = self.lvitm(C, tokens, key_padding_mask)
 
-        B, T, z_dim = Z.shape
+        B, P, z_dim = Z.shape
 
         ################
         #   Executor   #
         ################
 
         # Flatten input for executor
-        grid_expansion = I_test.unsequeeze(1).expand(B, T, 1, H, W).reshape(B*T, 1, H, W)
-        z_flat = Z.reshape(B*T, z_dim)
+        grid_expansion = I_test.unsqueeze(1).expand(B, P, 1, H, W).reshape(B*P, 1, H, W)
+        z_flat = Z.reshape(B*P, z_dim)
 
         # Execute proposals
         out_flat = self.executor(grid_expansion, z_flat)
         num_classes = out_flat.size(1)
-        outputs = out_flat.view(B, T, num_classes, H, W)
+        outputs = out_flat.view(B, P, num_classes, H, W)
 
         ##############
         #   Critic   #
@@ -75,7 +75,14 @@ class HybridExecuteController(nn.Module):
         scores = None
         best_idx = None
         if self.critic is not None and examples is not None:
-            scores = self.critic(examples, C, I_test, outputs)
+            scores = self.critic(
+                I_in=I_test,            # (B, 1, H, W)
+                O_pred=outputs,         # (B, P, num_classes, H, W)
+                mask_in=mask_test,      # (B, H, W)
+                mask_out=mask_test,     # assume same valid region as input
+                z=Z,                    # (B, P, z_dim)
+                C=C                     # (B, D)
+            )     
             best_idx = scores.argmax(dim=1)  # (B,)
 
         return outputs, scores, best_idx
@@ -87,15 +94,15 @@ class HybridExecuteController(nn.Module):
     @torch.no_grad()
     def apply_sequential(
         self,
-        init_grid,
-        init_mask,
-        C,
+        init_grid: torch.Tensor,  # (B, 1, H, W)
+        init_mask: torch.Tensor,  # (B, H, W)
+        C,                        # (B, D)
         examples=None,
         num_steps=3
     ):
-        grid = init_mask
-        mask = init_grid
-        history = [grid]
+        grid = init_grid
+        mask = init_mask
+        history: list[torch.Tensor] = [grid.clone()]
 
         #########################
         #   Iterate Proposals   #
@@ -113,28 +120,35 @@ class HybridExecuteController(nn.Module):
 
             # Compute proposal
             Z = self.lvitm(C, tokens, key_padding_mask)  # (B, P, z_dim)
-            B, T, z_dim = Z.shape
+            B, P, z_dim = Z.shape
 
             ################
             #   Executor   #
             ################
 
             # Flatten input for executor
-            grid_rep = grid.unsqueeze(1).expand(B, T, 1, H, W).reshape(B * T, 1, H, W)
-            z_flat = Z.reshape(B * T, z_dim)
+            grid_rep = grid.unsqueeze(1).expand(B, P, 1, H, W).reshape(B * P, 1, H, W)
+            z_flat = Z.reshape(B * P, z_dim)
 
             # Execute proposals
             out_flat = self.executor(grid_rep, z_flat)  # (B*T, num_classes, H, W)
             num_classes = out_flat.size(1)
-            outputs = out_flat.view(B, T, num_classes, H, W)
+            outputs = out_flat.view(B, P, num_classes, H, W)
 
             ##############
             #   Critic   #
             ##############
 
             # Choose proposal
-            if self.critic is not None and examples is not None:
-                scores = self.critic(examples, C, grid, outputs)  # (B, P)
+            if self.critic is not None:
+                scores = self.critic(
+                    I_in=grid,
+                    O_pred=outputs,
+                    mask_in=mask,
+                    mask_out=mask,
+                    z=Z,
+                    C=C
+                )  # (B, P)
                 best_idx = scores.argmax(dim=1)  # (B,)
             else:
                 # Or take first proposal
@@ -142,14 +156,14 @@ class HybridExecuteController(nn.Module):
 
             # Gather best output per batch
             idx = best_idx.view(B, 1, 1, 1, 1).expand(B, 1, num_classes, H, W)
-            best_out = outputs.gather(dim=1, index=idx).squeeze(1)  # (B, num_classes, H, W)
+            best_out_logits = outputs.gather(dim=1, index=idx).squeeze(1)  # (B, C_out, H, W)
 
-            # Treat best_out as new grid.
-            # Note: If executor outputs logits, may need to argmax to get discrete grid.
-            grid = best_out
-            mask = init_mask 
+            # Discretize logits
+            best_out_grid = best_out_logits.argmax(dim=1, keepdim=True)    # (B, 1, H, W)
 
-            history.append(grid)
+            grid = best_out_grid
+            # mask stays the same spatially
+            history.append(grid.clone())
 
-        final_grid = grid
-        return final_grid, history
+        final_grid_logits = best_out_logits  
+        return final_grid_logits, history

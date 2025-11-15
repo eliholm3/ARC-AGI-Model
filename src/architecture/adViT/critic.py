@@ -65,7 +65,7 @@ class AdversarialVisionTransformer(nn.Module):
             # Expand input across proposals
             I_exp = I_in.unsqueeze(1).expand(B, T, C_in, H, W)  # (B, T, C_in, H, W)
             I_flat = I_exp.reshape(B * T, C_in, H, W)
-            O_flat = I_exp.reshape(B * T, C_out, H, W)
+            O_flat = O_pred.reshape(B * T, C_out, H, W)
 
             #####################
             #   Combine masks   #
@@ -82,6 +82,7 @@ class AdversarialVisionTransformer(nn.Module):
                 # Combine
                 mask = torch.logical_or(mask_in, mask_out)  # (B, H, W)
                 mask = mask.unsqueeze(1).expand(B, T, H, W).reshape(B * T, H, W)
+                mask = mask.to(torch.bool)
             
             else: 
                 mask = None

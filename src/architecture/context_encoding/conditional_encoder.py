@@ -46,6 +46,8 @@ class ConditionalTestInputEncoder(nn.Module):
             key_padding_mask = ~flat_mask         # True = pad
         else:
             key_padding_mask = None
+        
+        key_padding_mask = key_padding_mask.to(torch.bool)
 
         ##########################
         #   Add Context Vector   #
@@ -62,7 +64,7 @@ class ConditionalTestInputEncoder(nn.Module):
         #####################################
         #   Positional Encoding + Dropout   #
         #####################################
-        
+
         tokens = self.vit.pos_encoding(tokens)
         tokens = self.vit.dropout(tokens)
 
