@@ -1,6 +1,16 @@
+## Use the following command to create visualization of a directory full of tasks
+# python visualize_groups.py \
+#  --task_dir Curve-BallDatasetTasks \
+#  --out_dir Curve-BallDatasetTasks_Images
+
+## Use the following command to create visualization of a single task 
+## and update the TASK_FILE and OUT_DIR variables in the script
+# python visualize_groups.py
+
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
@@ -183,12 +193,9 @@ def _write_png(img: Image.Image, path: Path) -> str:
     img.save(path.as_posix())
     return path.as_posix()
 
-def main():
-    here = Path(__file__).resolve().parent
-    task_path = Path(TASK_FILE)
-    if not task_path.is_absolute():
-        task_path = here / task_path
 
+def _visualize_arc_task(task_path: Path, out_root: Path) -> str:
+    """Render a single ARC-style task JSON (with 'train' and 'test') to a PNG."""
     obj = json.loads(task_path.read_text())
     if not isinstance(obj, dict) or "train" not in obj or "test" not in obj:
         raise SystemExit(f"{task_path} must be an ARC-style JSON with 'train' and 'test'.")
@@ -218,9 +225,61 @@ def main():
     if not rows:
         raise SystemExit("No train/test pairs with valid grids found to render.")
 
+    out_path = out_root / f"{task_path.stem}.png"
     stacked = _stack_rows(rows)
-    out_path = here / OUT_DIR / f"{task_path.stem}.png"
-    print("[ok]", _write_png(stacked, out_path))
+    return _write_png(stacked, out_path)
+
+def main():
+    here = Path(__file__).resolve().parent
+
+    parser = argparse.ArgumentParser(description="Visualize ARC-style tasks (train/test grids) as PNGs.")
+    parser.add_argument(
+        "--task_file",
+        type=str,
+        default=TASK_FILE,
+        help="Path to a single ARC JSON task file (with 'train' and 'test'). Ignored if --task_dir is set.",
+    )
+    parser.add_argument(
+        "--task_dir",
+        type=str,
+        default=None,
+        help="Optional directory containing ARC JSON task files; visualize each *.json file.",
+    )
+    parser.add_argument(
+        "--out_dir",
+        type=str,
+        default=OUT_DIR,
+        help="Output directory for generated PNGs.",
+    )
+
+    args = parser.parse_args()
+
+    out_root = Path(args.out_dir)
+    if not out_root.is_absolute():
+        out_root = here / out_root
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    if args.task_dir is not None:
+        dir_path = Path(args.task_dir)
+        if not dir_path.is_absolute():
+            dir_path = here / dir_path
+
+        json_files = sorted(p for p in dir_path.glob("*.json") if p.is_file())
+        if not json_files:
+            raise SystemExit(f"No .json files found in directory: {dir_path}")
+
+        for task_path in json_files:
+            try:
+                out_path = _visualize_arc_task(task_path, out_root)
+                print("[ok]", out_path)
+            except SystemExit as e:
+                print(f"[skip] {task_path}: {e}")
+    else:
+        task_path = Path(args.task_file)
+        if not task_path.is_absolute():
+            task_path = here / task_path
+        out_path = _visualize_arc_task(task_path, out_root)
+        print("[ok]", out_path)
 
 if __name__ == "__main__":
     main()
