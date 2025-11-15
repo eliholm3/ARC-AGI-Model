@@ -141,13 +141,6 @@ class TransformerEncoderBlock(nn.Module):
         self.norm2 = nn.LayerNorm(embed_dim)
 
     def forward(self, x, mask=None):
-        ###############################
-        #   B = batch size            #
-        #   N = sequence length       #
-        #   D = embedding dimension   #
-        #   H = height                #
-        #   W = width                 #
-        ###############################
 
         # Apply attention to normalized input
         x = x + self.attn(self.norm1(x), key_padding_mask=mask)
