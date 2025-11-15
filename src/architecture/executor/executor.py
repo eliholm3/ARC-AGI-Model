@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from CNNBlock import CNNBlock
-from ..ViT.body import TransformerEncoderBlock
+from src.architecture.executor.CNNBlock import CNNBlock
+from src.architecture.ViT.body import TransformerEncoderBlock
 
 
 # Hybrid ViT and CNN
@@ -121,7 +121,7 @@ class Executor(nn.Module):
         ################################
 
         for block in self.blocks:
-            tokens = block(tokens, key_padding_mask=None)
+            tokens = block(tokens, None)
 
         ###################
         #   Un-tokenize   #

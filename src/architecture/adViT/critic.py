@@ -31,15 +31,15 @@ class AdversarialVisionTransformer(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, 1)
         )
-
+        
     def forward(
             self,
-            I_in: torch.Tensor,  # (B, C_in, H, W)
-            O_pred: torch.Tensor,  # (B, C_out, H, W) or (B, P, C_out, H, W)
-            mask_in: torch.Tensor | None = None,  # (B, H, W)
-            mask_out: torch.Tensor | None = None,  # (B, H, W)
-            z: torch.Tensor | None = None,  # (B, z_dim) or (B, P, z_dim)
-            C: torch.Tensor | None = None  # (B, c_dim) or (B, P, z_dim)
+            I_in: torch.Tensor,        # (B, C_in, H, W)
+            O_pred: torch.Tensor,      # (B, C_out, H, W) or (B, T, C_out, H, W)
+            mask_in: torch.Tensor | None = None,
+            mask_out: torch.Tensor | None = None,
+            z: torch.Tensor | None = None,
+            C: torch.Tensor | None = None
     ) -> torch.Tensor:
         ###############################
         #   B = batch size            #    
@@ -51,128 +51,90 @@ class AdversarialVisionTransformer(nn.Module):
         ###############################
 
         B, C_in, H, W = I_in.shape
-        
+
         #################################
-        #   Handle Multiple Proposals   #
-        ################################# 
+        #   MULTI-PROPOSAL BRANCH       #
+        #################################
 
-        # Check for multiple proposals
-        multi = (O_pred.dim() == 5)
-
-        if multi:
+        if O_pred.dim() == 5:
             B, T, C_out, H, W = O_pred.shape
 
-            # Expand input across proposals
-            I_exp = I_in.unsqueeze(1).expand(B, T, C_in, H, W)  # (B, T, C_in, H, W)
-            I_flat = I_exp.reshape(B * T, C_in, H, W)
-            O_flat = O_pred.reshape(B * T, C_out, H, W)
+            # Expand inputs
+            I_exp = I_in.unsqueeze(1).expand(B, T, C_in, H, W)
+            I_flat = I_exp.reshape(B*T, C_in, H, W)
+            O_flat = O_pred.reshape(B*T, C_out, H, W)
 
-            #####################
-            #   Combine masks   #
-            #####################
+            # Convert O_flat to 1 channel if needed
+            if O_flat.size(1) > 1:
+                O_flat = torch.argmax(O_flat, dim=1, keepdim=True).float()
 
-            if mask_in is not None or mask_out is not None:
-
-                # Make default mask
-                if mask_in is None:
-                    mask_in = torch.zeros(B, H, W, dtype=torch.bool, device=O_pred.device)
-                if mask_out is None:
-                    mask_out = torch.zeros(B, H, W, dtype=torch.bool, device=O_pred.device)
-                
-                # Combine
-                mask = torch.logical_or(mask_in, mask_out)  # (B, H, W)
-                mask = mask.unsqueeze(1).expand(B, T, H, W).reshape(B * T, H, W)
-                mask = mask.to(torch.bool)
-            
-            else: 
-                mask = None
-
-            # Concatentate input & output along channels
-            x = torch.cat([I_flat, O_flat], dim=1)  # (B*T, C_in+C_out, H, W)
-
-            ######################
-            #   Encode Context   #
-            ######################
-
-            # Encode with shared ViT to get pair embedding
-            h_flat = self.vit.forward_grid(x, mask=mask)  # (B*T, D)
-            h = h_flat.view(B, T, -1)  # (B,T,D)
-
-            features = [h]
-
-            ################################
-            #   Add Meta Vectors (z + C)   #
-            ################################
-
-            # Add z if provided
-            if z is not None:
-                # z: (B, z_dim) or (B, T, z_dim)
-                if z.dim() == 2:
-                    z = z.unsqueeze(1).expand(B, T, -1)
-                features.append(z)
-
-            # Add C if provided
-            if C is not None:
-                # C: (B, c_dim) -> expand across T
-                C_exp = C.unsqueeze(1).expand(B, T, -1)
-                features.append(C_exp)
-
-            feat = torch.cat(features, dim=-1)  # (B,T,in_dim)
-
-            #############################
-            #   Compute Critic Scores   #
-            #############################
-
-            scores = self.mlp(feat).squeeze(-1)  # (B,T)
-            return scores
-
-        else:
-
-            ##############################
-            #   Handle Single Proposal   #
-            ##############################
-            
-            B, C_out, H, W = O_pred.shape
-
-            #####################
-            #   Combine masks   #
-            #####################
-
+            # Combine masks
             if mask_in is not None or mask_out is not None:
                 if mask_in is None:
                     mask_in = torch.zeros(B, H, W, dtype=torch.bool, device=O_pred.device)
                 if mask_out is None:
                     mask_out = torch.zeros(B, H, W, dtype=torch.bool, device=O_pred.device)
-                mask = torch.logical_or(mask_in, mask_out)  # (B,H,W)
+                mask = torch.logical_or(mask_in, mask_out)
+                mask = mask.unsqueeze(1).expand(B, T, H, W).reshape(B*T, H, W)
             else:
                 mask = None
 
-            ######################
-            #   Encode Context   #
-            ######################
+            # Concatenate input + output
+            x = torch.cat([I_flat, O_flat], dim=1)  # (B*T, 2, H, W)
 
-            x = torch.cat([I_in, O_pred], dim=1)  # (B, C_in+C_out, H, W)
-            h = self.vit.forward_grid(x, mask=mask)  # (B,D)
+            # Encode with ViT
+            h_flat = self.vit.forward_grid(x, mask=mask)
+            h = h_flat.view(B, T, -1)
 
-            features = [h]
-
-            ################################
-            #   Add Meta Vectors (z + C)   #
-            ################################
+            # Collect features
+            feats = [h]
 
             if z is not None:
-                # z: (B, z_dim)
-                features.append(z)
+                if z.dim() == 2:
+                    z = z.unsqueeze(1).expand(B, T, -1)
+                feats.append(z)
 
             if C is not None:
-                # C: (B, c_dim)
-                features.append(C)
+                feats.append(C.unsqueeze(1).expand(B, T, -1))
 
-            feat = torch.cat(features, dim=-1)  # (B,in_dim)
+            feat = torch.cat(feats, dim=-1)
+            return self.mlp(feat).squeeze(-1)
 
-            #############################
-            #   Compute Critic Scores   #
-            #############################
+        #################################
+        #   SINGLE-PROPOSAL BRANCH      #
+        #################################
 
-            scores = self.mlp(feat).squeeze(-1)  # (B,)
-            return scores
+        B, C_out, H, W = O_pred.shape
+
+        # Convert O_pred to 1 channel if needed
+        if O_pred.size(1) > 1:          # multi-channel class logits
+            classes = torch.arange(O_pred.size(1), device=O_pred.device).view(1, -1, 1, 1)
+            probs = O_pred.softmax(dim=1)
+            O_pred = (probs * classes).sum(dim=1, keepdim=True)   # differentiable
+
+
+        # Combine masks
+        if mask_in is not None or mask_out is not None:
+            if mask_in is None:
+                mask_in = torch.zeros(B, H, W, dtype=torch.bool, device=O_pred.device)
+            if mask_out is None:
+                mask_out = torch.zeros(B, H, W, dtype=torch.bool, device=O_pred.device)
+            mask = torch.logical_or(mask_in, mask_out)
+        else:
+            mask = None
+
+        # Concatenate input + output
+        x = torch.cat([I_in, O_pred], dim=1)  # (B, 2, H, W)
+
+        # Encode with ViT
+        h = self.vit.forward_grid(x, mask=mask)
+
+        # Combine features for MLP
+        feats = [h]
+        if z is not None:
+            feats.append(z)
+        if C is not None:
+            feats.append(C)
+        feat = torch.cat(feats, dim=-1)
+
+        return self.mlp(feat).squeeze(-1)

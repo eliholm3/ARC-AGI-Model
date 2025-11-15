@@ -1,13 +1,9 @@
-import math
 import torch
-import torch.nn.functional as F
 from torch import autograd
 
-from available_functions import (
-    VisionTransformer,
-    AdversarialVisionTransformer,
-    arc_loader
-)
+from src.architecture.ViT.body import VisionTransformer
+from src.architecture.adViT.critic import AdversarialVisionTransformer
+from src.data_pipeline.dataloader import ARCDataModule
 
 
 ###############################
@@ -26,30 +22,38 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ###############################
 
 def build_critic():
-    """
-    Builds a VisionTransformer + AdversarialVisionTransformer critic.
-    """
+    from src.architecture.ViT.body import VisionTransformer
+    from src.architecture.adViT.critic import AdversarialVisionTransformer
 
-    # Shared ViT for critic
-    # NOTE: in_channels = 2 because we concat (I_in, O_pred) along channel dimension
-    vit = VisionTransformer(
-        img_size=30,      # adjust if you know your max grid size
-        patch_size=1,
-        embed_dim=128,
-        num_heads=4,
-        depth=6,
-        mlp_dim=256,
-        in_channels=2
+    img_size   = 30
+    patch_size = 1
+    embed_dim  = 128
+    num_heads  = 4
+    depth_vit  = 6
+    mlp_dim    = 256
+
+    # IMPORTANT: ALWAYS 2 CHANNELS
+    #   ch1 = I_test  (1 channel)
+    #   ch2 = O_real or O_fake (1 channel)
+    vit_critic = VisionTransformer(
+        img_size=img_size,
+        patch_size=patch_size,
+        embed_dim=embed_dim,
+        num_heads=num_heads,
+        depth=depth_vit,
+        mlp_dim=mlp_dim,
+        in_channels=2       
     ).to(DEVICE)
 
     critic = AdversarialVisionTransformer(
-        vit_encoder=vit,
-        z_dim=None,     # not needed for warmup
-        c_dim=None,     # not needed for warmup
+        vit_encoder=vit_critic,
+        z_dim=None,
+        c_dim=None,
         hidden_dim=256
     ).to(DEVICE)
 
     return critic
+
 
 
 ###############################
@@ -246,6 +250,6 @@ def train_critic_phase2(critic, data_loader):
 
 if __name__ == "__main__":
     critic = build_critic()
-    critic = train_critic_phase2(critic, arc_loader)
+    critic = train_critic_phase2(critic, ARCDataModule)
     torch.save(critic.state_dict(), "critic_phase2_warmup.pt")
     print("\nSaved critic after Phase 2 warmup: critic_phase2_warmup.pt")

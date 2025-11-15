@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from attention import MultiHeadAttention
+from src.architecture.LViTM.attention import MultiHeadAttention
 
 
 class LViTMBlock(nn.Module):
@@ -132,11 +132,15 @@ class LargeVisionTransformerModel(nn.Module):
         ##################
 
         if key_padding_mask is not None:
+            # context token padding: (B, 1)
             c_pad = torch.zeros(B, 1, dtype=torch.bool, device=key_padding_mask.device)
-            p_pad = torch.zeros(T, 1, dtype=torch.bool, device=key_padding_mask.device)
-            full_mask = torch.cat([c_pad, p_pad, key_padding_mask], dim=1)  # (B, 1+T+S)
+            # proposal tokens padding: (B, T)
+            p_pad = torch.zeros(B, T, dtype=torch.bool, device=key_padding_mask.device)
+            # full mask: (B, 1 + T + S)
+            full_mask = torch.cat([c_pad, p_pad, key_padding_mask], dim=1)
         else:
             full_mask = None
+
         
         # Optional positional encoding here
 

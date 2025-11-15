@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 
-from ..architecture.LViTM.body import LargeVisionTransformerModel
-from ..architecture.executor.executor import Executor
-from ..architecture.adViT.critic import AdversarialVisionTransformer
-from ..architecture.context_encoding.conditional_encoder import ConditionalTestInputEncoder
+from src.architecture.LViTM.body import LargeVisionTransformerModel
+from src.architecture.executor.executor import Executor
+from src.architecture.adViT.critic import AdversarialVisionTransformer
+from src.architecture.context_encoding.conditional_encoder import ConditionalTestInputEncoder
 
 
 class HybridExecuteController(nn.Module):
@@ -25,9 +25,9 @@ class HybridExecuteController(nn.Module):
         ###############################
 
         super().__init__()
-        self.lvitm = lvitm,
+        self.lvitm = lvitm
         self.executor = executor
-        self.cond_encoder = cond_encoder,
+        self.cond_encoder = cond_encoder
         self.critic = critic
 
     ################################
@@ -167,3 +167,69 @@ class HybridExecuteController(nn.Module):
 
         final_grid_logits = best_out_logits  
         return final_grid_logits, history
+
+        ############################################################
+    #   PPO Rollout + (stub) Update for Phase 4                #
+    ############################################################
+    def ppo_rollout_and_update(
+        self,
+        init_grid: torch.Tensor,       # (B, 1, H, W)
+        init_mask: torch.Tensor,       # (B, H, W)
+        C: torch.Tensor,               # (B, D)
+        ppo_refiner,                   # PPORefiner object (currently unused in stub)
+        num_steps: int,
+        gamma: float,
+    ):
+        """
+        Minimal implementation to satisfy Phase 4:
+
+        - Encodes the test grid with cond_encoder
+        - Runs LViTM once to get latent proposals z
+        - Picks the first proposal
+        - Runs Executor to get final logits
+        - Returns logits and a dummy PPO stats dict
+
+        This does NOT yet perform real PPO; it is a safe stub
+        that keeps all dimensions consistent and lets training run.
+        """
+
+        # 1. Encode test grid into tokens
+        #    ConditionalTestInputEncoder.forward: (I_test, mask_I) -> (tokens, key_padding_mask)
+        test_tokens, key_padding_mask = self.cond_encoder(
+            I_test=init_grid,
+            mask_test=init_mask,
+            C=C
+        )
+
+
+        # 2. Get latent proposals z from LViTM
+        #    LargeVisionTransformerModel.forward: (tokens, key_padding_mask, C) -> Z
+        Z = self.lvitm(
+            C=C,
+            test_tokens=test_tokens,
+            key_padding_mask=key_padding_mask
+        )
+        # typically (B, T, z_dim) or (B, z_dim)
+
+        # 3. Choose a single z per sample (e.g., first proposal)
+        if Z.dim() == 3:  # (B, T, z_dim)
+            Z0 = Z[:, 0, :]           # (B, z_dim)
+        else:             # already (B, z_dim)
+            Z0 = Z
+
+        # 4. Run Executor to get logits over ARC colors
+        #    Executor.forward is expected to look like:
+        #       forward(I_test, Z, key_padding_mask=None)
+        logits = self.executor(init_grid, Z0)
+        # (B, num_classes, H, W)
+
+        # 5. Package PPO stats (stubbed out for now)
+        ppo_stats = {
+            "loss": 0.0,
+            "policy_loss": 0.0,
+            "value_loss": 0.0,
+            "entropy": 0.0,
+        }
+
+        # Phase 4 expects: (final_logits, ppo_stats)
+        return logits, ppo_stats

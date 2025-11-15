@@ -1,8 +1,8 @@
 import torch
 import torch.nn.functional as F
 
-from ppo_actor import PPOActor
-from ppo_value import PPOValuer
+from src.training.ppo_actor import PPOActor
+from src.training.ppo_value import PPOValuer
 
 
 class PPORefiner:

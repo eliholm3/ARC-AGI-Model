@@ -9,10 +9,10 @@ class ExamplePairEncoder(nn.Module):
 
     def __init__(
             self, 
-            vit_encoder: nn.Module
+            vit_pair: nn.Module
     ):
         super().__init__()
-        self.vit = vit_encoder # generic
+        self.vit = vit_pair # generic
         self.norm = nn.LayerNorm(self.vit.c_token.size(-1)) # normalize h_i
 
     def forward(

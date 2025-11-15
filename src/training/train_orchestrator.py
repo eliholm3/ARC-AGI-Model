@@ -1,7 +1,8 @@
 import argparse
 import torch
+from pathlib import Path
 
-from checkpoints import save_checkpoint, load_checkpoint
+from src.training.checkpoints import save_checkpoint, load_checkpoint
 
 ###############################
 #   Device                    #
@@ -15,24 +16,46 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ###############################
 
 # Phase 1
-from phase1 import train_phase1          # def train_phase1(arc_loader) -> generator
+from src.training.phase1 import train_phase1          # def train_phase1(arc_loader) -> generator
 
 # Phase 2
-from train_phase2_critic import train_critic_phase2, build_critic
+from src.training.phase2 import train_critic_phase2, build_critic
 #   def build_critic() -> critic
 #   def train_critic_phase2(critic, data_loader) -> critic
 
 # Phase 3
-from train_phase3_adv import train_phase3_adversarial, build_generator, build_critic as build_critic_phase3
+from src.training.phase3 import train_phase3_adversarial, build_generator, build_critic as build_critic_phase3
 #   def build_generator() -> generator
 #   def build_critic_phase3() -> critic
 #   def train_phase3_adversarial(generator, critic, data_loader) -> (generator, critic)
 
 # Phase 4
-from train_phase4_ppo import train_phase4_ppo  # def train_phase4_ppo() -> None
+from src.training.phase4 import train_phase4_ppo  # def train_phase4_ppo() -> None
 
 # Data loader
-from available_functions import arc_loader
+from src.data_pipeline.dataloader import ARCDataModule
+
+# Point to your local folder named "training"
+folder_path = Path("./src/data_pipeline/ARC_data/data/training")
+
+data_module = ARCDataModule(
+    dir_path=folder_path,
+    batch_size=1,
+    shuffle=True,
+    num_workers=0,
+    pin_memory=False,
+    pad_value=0,
+).prepare()
+
+# ========================
+# LIMIT DATASET FOR DEBUG
+# ========================
+LIMIT_SAMPLES = 1    # or 2
+
+if LIMIT_SAMPLES is not None:
+    data_module.dataset.data = data_module.dataset.data[:LIMIT_SAMPLES]
+
+arc_loader = data_module.get_loader()
 
 
 ###############################
@@ -111,7 +134,12 @@ def run_phase4():
     print("===============================")
 
     # train_phase4_ppo internally loads generator/critic if needed
-    train_phase4_ppo()
+    actor, value_fn = train_phase4_ppo(data_loader=arc_loader)
+
+    # Save PPO modules
+    torch.save(actor.state_dict(), "checkpoints/ppo_actor_phase4.pt")
+    torch.save(value_fn.state_dict(), "checkpoints/ppo_valuer_phase4.pt")
+    print("\nSaved PPO actor and valuer for Phase 4.")
 
 
 ###############################

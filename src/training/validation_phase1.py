@@ -2,10 +2,10 @@ import torch
 import torch.nn.functional as F
 
 # Import your generator
-from arc_generator import ARCGenerator
+from src.inference.generator import ARCGenerator
 
 # Probably in the same file as ARCSampleDataset
-from available_functions import arc_loader  
+from src.data_pipeline.dataloader import ARCDataModule
 
 
 @torch.no_grad()
@@ -88,4 +88,4 @@ if __name__ == "__main__":
     generator.to(DEVICE)
 
     # Use same loader or a separate validation loader
-    validate_phase1(generator, arc_loader, DEVICE)
+    validate_phase1(generator, ARCDataModule, DEVICE)

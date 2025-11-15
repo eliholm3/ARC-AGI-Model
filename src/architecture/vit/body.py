@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from attention import MultiHeadAttention
-from preprocessing import PatchEmbedding, PositionalEncoding    
+from src.architecture.ViT.attention import MultiHeadAttention
+from src.architecture.ViT.preprocessing import PatchEmbedding, PositionalEncoding    
 
 class VisionTransformer(nn.Module):
     def __init__(
@@ -27,9 +27,6 @@ class VisionTransformer(nn.Module):
             embed_dim=embed_dim
         )
 
-        # Patch count
-        self.num_patches = (img_size // patch_size) ** 2
-
         ########################
         #    Context Token     #
         ########################
@@ -40,7 +37,7 @@ class VisionTransformer(nn.Module):
         #    Positional Encoding    #
         #############################
 
-        self.pos_encoding = PositionalEncoding(embed_dim, self.num_patches + 1)
+        self.pos_encoding = PositionalEncoding(embed_dim)
 
         self.dropout = nn.Dropout(0.1) # customizeable?
 
@@ -85,7 +82,15 @@ class VisionTransformer(nn.Module):
             mask = mask.to(torch.bool)
 
         # Convert mask to padding mask
-        key_padding_mask = ~mask
+        # mask: (B, H, W) or None
+        if mask is not None:
+            # Convert spatial mask (B,H,W) → token mask (B,N)
+            mask_flat = mask.flatten(1)      # (B, H*W)
+            key_padding_mask = ~mask_flat    # invert boolean mask
+        else:
+            key_padding_mask = None
+
+
 
         # Prepend context
         c = self.c_token.expand(B, -1, -1)

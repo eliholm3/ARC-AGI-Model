@@ -5,7 +5,7 @@ class ConditionalTestInputEncoder(nn.Module):
 
     def __init__(
             self, 
-            vit_encoder: nn.Module
+            vit_test: nn.Module
     ):
         ###############################
         #   B = batch size            #    
@@ -16,7 +16,7 @@ class ConditionalTestInputEncoder(nn.Module):
         ###############################
 
         super().__init__()
-        self.vit = vit_encoder
+        self.vit = vit_test
         self.embed_dim = self.vit.c_token.size(-1)
 
         # Project context vector to embedding dim

@@ -1,5 +1,5 @@
 import torch.nn as nn
-from FiLM import FiLM
+from src.architecture.executor.FiLM import FiLM
 
 class CNNBlock(nn.Module):
     def __init__(

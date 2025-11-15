@@ -1,24 +1,22 @@
 import torch
-import torch.nn.functional as F
 
-from checkpoints import load_checkpoint
+from src.training.checkpoints import load_checkpoint
 
-from arc_generator import ARCGenerator
-from ppo_actor import PPOActor
-from ppo_value import PPOValuer
-from ppo_refiner import PPORefiner
+from src.inference.generator import ARCGenerator
+from src.training.ppo_actor import PPOActor
+from src.training.ppo_value import PPOValuer
+from src.training.ppo_refiner import PPORefiner
 
-from available_functions import (
-    VisionTransformer,
-    ExamplePairEncoder,
-    ExamplePairAggregator,
-    ConditionalTestInputEncoder,
-    LargeVisionTransformerModel,
-    Executor,
-    AdversarialVisionTransformer,
-    arc_loader
-)
-from controller.hybrid_execute_controller import HybridExecuteController
+from src.architecture.ViT.body import VisionTransformer
+from src.architecture.context_encoding.example_pair_encoder import ExamplePairEncoder
+from src.architecture.context_encoding.example_pair_aggregator import ExamplePairAggregator
+from src.architecture.context_encoding.conditional_encoder import ConditionalTestInputEncoder
+from src.architecture.LViTM.body import LargeVisionTransformerModel
+from src.architecture.executor.executor import Executor
+from src.architecture.adViT.critic import AdversarialVisionTransformer
+from src.data_pipeline.dataloader import ARCDataModule
+
+from src.inference.execution_controller import HybridExecuteController
 
 
 ###############################
@@ -205,7 +203,7 @@ def evaluate_final():
     total_pix_ppo = 0
     total_pixels = 0
 
-    for batch in arc_loader:
+    for batch in ARCDataModule:
         for k, v in batch.items():
             if torch.is_tensor(v):
                 batch[k] = v.to(DEVICE)

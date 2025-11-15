@@ -1,22 +1,20 @@
 import torch
 import torch.nn.functional as F
 
-from ..inference.generator import ARCGenerator
-from ppo_actor import PPOActor
-from ppo_value import PPOValuer
-from ppo_refiner import PPORefiner
+from src.training.ppo_actor import PPOActor
+from src.training.ppo_value import PPOValuer
+from src.training.ppo_refiner import PPORefiner
 
-from available_functions import (
-    VisionTransformer,
-    ExamplePairEncoder,
-    ExamplePairAggregator,
-    ConditionalTestInputEncoder,
-    LargeVisionTransformerModel,
-    Executor,
-    AdversarialVisionTransformer,
-    arc_loader
-)
-from controller.hybrid_execute_controller import HybridExecuteController
+from src.architecture.context_encoding.example_pair_encoder import ExamplePairEncoder
+from src.architecture.context_encoding.example_pair_aggregator import ExamplePairAggregator
+from src.architecture.context_encoding.conditional_encoder import ConditionalTestInputEncoder
+from src.architecture.ViT.body import VisionTransformer
+from src.architecture.LViTM.body import LargeVisionTransformerModel
+from src.architecture.executor.executor import Executor
+from src.architecture.adViT.critic import AdversarialVisionTransformer
+from src.data_pipeline.dataloader import ARCDataModule
+
+from src.inference.execution_controller import HybridExecuteController
 
 
 ###############################
@@ -41,35 +39,87 @@ def build_generator_components():
     Used to compute context C and supply modules to the controller.
     """
 
-    vit_gen = VisionTransformer(
-        img_size=30,
-        patch_size=1,
-        embed_dim=128,
-        num_heads=4,
-        depth=6,
-        mlp_dim=256,
+    ###########################
+    #   Shared Hyperparams    #
+    ###########################
+
+    img_size   = 30
+    patch_size = 1
+    embed_dim  = 128
+    num_heads  = 4
+    depth_vit  = 6
+    mlp_dim    = 256
+    z_dim      = 64
+    num_props  = 4
+
+    ###############################
+    #   Vision Transformers       #
+    ###############################
+
+    # For example pairs (I, O) -> 2 channels
+    vit_pair = VisionTransformer(
+        img_size=img_size,
+        patch_size=patch_size,
+        embed_dim=embed_dim,
+        num_heads=num_heads,
+        depth=depth_vit,
+        mlp_dim=mlp_dim,
         in_channels=2
     ).to(DEVICE)
 
-    example_encoder = ExamplePairEncoder(vit_gen).to(DEVICE)
-    aggregator = ExamplePairAggregator(embed_dim=vit_gen.c_token.size(-1)).to(DEVICE)
-    cond_encoder = ConditionalTestInputEncoder(vit_gen).to(DEVICE)
+    # For test input I_test -> 1 channel
+    vit_test = VisionTransformer(
+        img_size=img_size,
+        patch_size=patch_size,
+        embed_dim=embed_dim,
+        num_heads=num_heads,
+        depth=depth_vit,
+        mlp_dim=mlp_dim,
+        in_channels=1
+    ).to(DEVICE)
+
+    ###########################################
+    #   Context Encoders (Pair + Aggregator)  #
+    ###########################################
+
+    # Example pair encoder uses ViT with 2 input channels
+    example_encoder = ExamplePairEncoder(vit_pair).to(DEVICE)
+
+    # Aggregator uses the same embedding dimension as ViTs
+    aggregator = ExamplePairAggregator(
+        embed_dim=vit_pair.c_token.size(-1)
+    ).to(DEVICE)
+
+    ###########################################
+    #   Conditional Test Input Encoder        #
+    ###########################################
+
+    # Conditional encoder uses the 1-channel ViT
+    cond_encoder = ConditionalTestInputEncoder(vit_test).to(DEVICE)
+
+    ###############################
+    #   Latent Proposal Model     #
+    ###############################
 
     lvitm = LargeVisionTransformerModel(
-        embed_dim=vit_gen.c_token.size(-1),
+        embed_dim=vit_pair.c_token.size(-1),
         num_heads=4,
         mlp_dim=256,
         depth=8,
-        num_proposals=4,
-        z_dim=64
+        num_proposals=num_props,
+        z_dim=z_dim
     ).to(DEVICE)
 
+    ###############################
+    #   Executor                  #
+    ###############################
+
     executor = Executor(
-        embed_dim=vit_gen.c_token.size(-1),
+        embed_dim=vit_pair.c_token.size(-1),
         num_heads=4,
         mlp_dim=256,
         depth=4,
-        z_dim=64,
+        z_dim=z_dim,
         hidden_channels=64,
         num_classes=NUM_CLASSES
     ).to(DEVICE)
@@ -77,19 +127,33 @@ def build_generator_components():
     return example_encoder, aggregator, cond_encoder, lvitm, executor
 
 
+
 ###############################
 #   Build Critic              #
 ###############################
 
 def build_critic():
+    from src.architecture.ViT.body import VisionTransformer
+    from src.architecture.adViT.critic import AdversarialVisionTransformer
+
+    img_size   = 30
+    patch_size = 1
+    embed_dim  = 128
+    num_heads  = 4
+    depth_vit  = 6
+    mlp_dim    = 256
+
+    # IMPORTANT: ALWAYS 2 CHANNELS
+    #   ch1 = I_test  (1 channel)
+    #   ch2 = O_real or O_fake (1 channel)
     vit_critic = VisionTransformer(
-        img_size=30,
-        patch_size=1,
-        embed_dim=128,
-        num_heads=4,
-        depth=6,
-        mlp_dim=256,
-        in_channels=1 + NUM_CLASSES
+        img_size=img_size,
+        patch_size=patch_size,
+        embed_dim=embed_dim,
+        num_heads=num_heads,
+        depth=depth_vit,
+        mlp_dim=mlp_dim,
+        in_channels=2      
     ).to(DEVICE)
 
     critic = AdversarialVisionTransformer(
@@ -100,6 +164,7 @@ def build_critic():
     ).to(DEVICE)
 
     return critic
+
 
 
 ###############################
@@ -154,7 +219,7 @@ def compute_context_C(
 #   Phase 4 PPO Training      #
 ###############################
 
-def train_phase4_ppo():
+def train_phase4_ppo(data_loader: ARCDataModule):
     # Build components
     example_encoder, aggregator, cond_encoder, lvitm, executor = build_generator_components()
     critic = build_critic()
@@ -190,7 +255,7 @@ def train_phase4_ppo():
     for epoch in range(PPO_EPOCHS):
         print(f"\n=== Phase 4 PPO Epoch {epoch + 1}/{PPO_EPOCHS} ===")
 
-        for batch_idx, batch in enumerate(arc_loader):
+        for batch_idx, batch in enumerate(data_loader):
 
             ###############################
             #   Move batch to device      #
@@ -259,11 +324,8 @@ def train_phase4_ppo():
                   f"policy={ppo_stats['policy_loss']:.4f}, "
                   f"value={ppo_stats['value_loss']:.4f}, "
                   f"entropy={ppo_stats['entropy']:.4f}")
-
-    # Save PPO modules
-    torch.save(actor.state_dict(), "ppo_actor_phase4.pt")
-    torch.save(value_fn.state_dict(), "ppo_valuer_phase4.pt")
-    print("\nSaved PPO actor and valuer for Phase 4.")
+            
+    return actor, value_fn
 
 
 if __name__ == "__main__":
