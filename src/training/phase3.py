@@ -4,6 +4,8 @@ from torch import autograd
 
 from src.inference.generator import ARCGenerator
 
+from src.training.utils_debug import report_param_stats
+
 from src.architecture.context_encoding.example_pair_encoder import ExamplePairEncoder
 from src.architecture.context_encoding.example_pair_aggregator import ExamplePairAggregator
 from src.architecture.context_encoding.conditional_encoder import ConditionalTestInputEncoder
@@ -182,46 +184,41 @@ def one_hot_from_int(
 #   Gradient Penalty (GP)     #
 ###############################
 
-def gradient_penalty(critic, I_real, O_real, I_fake, O_fake, device):
-    """
-    Computes WGAN-GP gradient penalty for the critic.
-    All inputs are (B,1,H,W).
-    """
+def gradient_penalty(
+        critic,
+        I_real,    # (B,1,H,W)
+        O_real,    # (B,1,H,W)
+        O_fake,    # (B,1,H,W)
+        mask_in,   # (B,H,W)
+        mask_out   # (B,H,W)
+):
+    B, _, H, W = O_real.shape
 
-    # Interpolate input grid
-    epsilon = torch.rand(I_real.size(0), 1, 1, 1, device=device)
-    I_interp = epsilon * I_real + (1 - epsilon) * I_fake
-    I_interp.requires_grad_(True)
-
-    # Interpolate output grid
-    epsilon2 = torch.rand(O_real.size(0), 1, 1, 1, device=device)
-    O_interp = epsilon2 * O_real + (1 - epsilon2) * O_fake
+    epsilon = torch.rand(B, 1, 1, 1, device=O_real.device)
+    O_interp = epsilon * O_real + (1.0 - epsilon) * O_fake
     O_interp.requires_grad_(True)
 
-    # Forward pass through critic
-    scores = critic(I_interp, O_interp)  # (B,)
+    scores = critic(
+        I_in=I_real,
+        O_pred=O_interp,
+        mask_in=mask_in,
+        mask_out=mask_out,
+        z=None,
+        C=None
+    )
 
-    # Compute grad w.r.t BOTH I and O
-    grads = torch.autograd.grad(
-        outputs=scores,
-        inputs=[I_interp, O_interp],
-        grad_outputs=torch.ones_like(scores),
+    grads = autograd.grad(
+        outputs=scores.sum(),
+        inputs=O_interp,
         create_graph=True,
         retain_graph=True,
         only_inputs=True
-    )
+    )[0]
 
-    # grads is a tuple: (grad_I, grad_O)
-    grad_I, grad_O = grads
+    grads = grads.view(B, -1)
+    grad_norm = grads.norm(2, dim=1)
+    return ((grad_norm - 1.0)**2).mean()
 
-    # Combine the norms
-    grad_norm = (
-        grad_I.reshape(grad_I.size(0), -1).norm(2, dim=1) +
-        grad_O.reshape(grad_O.size(0), -1).norm(2, dim=1)
-    )
-
-    gp = ((grad_norm - 1) ** 2).mean()
-    return gp
 
 
 
@@ -310,12 +307,14 @@ def train_phase3_adversarial(
 
                 critic_opt.zero_grad()
 
-                # Use detached logits for critic training
-                logits_det = logits.detach().view(K_test, C_out, H, W)  # (B*K_test, C_out,H,W)
+                # Real outputs: single-channel integer grid
+                targets = test_outputs.view(K_test, H, W)               # (K_test, H, W)
+                O_real = targets.unsqueeze(1).float()                   # (K_test, 1, H, W)
 
-                # Real outputs: one-hot
-                targets = test_outputs.view(K_test, H, W)               # (K_test,H,W)
-                O_real = one_hot_from_int(targets, NUM_CLASSES)        # (K_test, C_out, H, W)
+                # Fake outputs: take argmax over class dimension
+                logits_det = logits.detach().view(K_test, C_out, H, W)  # (K_test, C_out, H, W)
+                O_fake = logits_det.argmax(dim=1, keepdim=True).float() # (K_test, 1, H, W)
+
 
                 # Inputs
                 I_real = test_inputs.view(K_test, H, W).unsqueeze(1).float()  # (K_test,1,H,W)
@@ -324,7 +323,6 @@ def train_phase3_adversarial(
                 mask_in = test_input_masks.view(K_test, H, W).bool()
                 mask_out = test_output_masks.view(K_test, H, W).bool()
 
-                # Critic scores
                 score_real = critic(
                     I_in=I_real,
                     O_pred=O_real,
@@ -332,31 +330,42 @@ def train_phase3_adversarial(
                     mask_out=mask_out,
                     z=None,
                     C=None
-                )  # (K_test,)
+                )
 
                 score_fake = critic(
                     I_in=I_real,
-                    O_pred=logits_det,
+                    O_pred=O_fake,       # FIXED
                     mask_in=mask_in,
                     mask_out=mask_out,
                     z=None,
                     C=None
-                )  # (K_test,)
+                )
+
 
                 wasserstein = score_fake.mean() - score_real.mean()
                 gp = gradient_penalty(
-                    critic,
-                    I_real,
-                    O_real,
-                    I_real,
-                    logits_det,
-                    DEVICE
+                    critic=critic,
+                    I_real=I_real,
+                    O_real=O_real,
+                    O_fake=O_fake,
+                    mask_in=mask_in,
+                    mask_out=mask_out
                 )
+
 
                 critic_loss = wasserstein + LAMBDA_GP * gp
 
                 critic_loss.backward()
+
+                for name, p in critic.named_parameters():
+                    if p.grad is not None:
+                        if torch.isnan(p.grad).any():
+                            print(f"[PHASE3 CRITIC NaN GRAD] {name}")
+                        if torch.all(p.grad == 0):
+                            print(f"[PHASE3 CRITIC ZERO GRAD] {name}")
+
                 critic_opt.step()
+
 
                 total_critic_loss += critic_loss.item()
                 n_critic_steps += 1
@@ -371,32 +380,56 @@ def train_phase3_adversarial(
             gen_opt.zero_grad()
 
             # Supervised CE loss across all test pairs
-            logits_flat = logits.view(B * K_test, C_out, H, W)         # (K_test,C,H,W)
-            targets_flat = test_outputs.view(B * K_test, H, W).long()  # (K_test,H,W)
+            logits_flat = logits.view(B*K_test, C_out, H, W)
+            targets_flat = test_outputs.view(B*K_test, H, W).long()
 
-            ce_loss = F.cross_entropy(logits_flat, targets_flat)
+            PAD_TOKEN = -100
+            targets = targets_flat.clone()
+            pad_mask = ~test_output_masks.view(B*K_test, H, W).bool()
+            targets[pad_mask] = PAD_TOKEN
 
-            # Adversarial loss: - E[critic(I, O_fake)]
-            logits_for_adv = logits.view(K_test, C_out, H, W)          # (K_test,C,H,W)
+            per_pixel = F.cross_entropy(
+                logits_flat,
+                targets,
+                ignore_index=PAD_TOKEN,
+                reduction="none"
+            )
+
+            valid = (targets != PAD_TOKEN).float()
+            ce_loss = (per_pixel * valid).sum() / valid.sum()
 
             I_for_adv = test_inputs.view(K_test, H, W).unsqueeze(1).float()
             mask_in_adv = test_input_masks.view(K_test, H, W).bool()
             mask_out_adv = test_output_masks.view(K_test, H, W).bool()
 
+            logits_for_adv = logits.view(K_test, C_out, H, W)
+            O_fake_adv = logits_for_adv.argmax(dim=1, keepdim=True).float()
+
             fake_scores = critic(
                 I_in=I_for_adv,
-                O_pred=logits_for_adv,
+                O_pred=O_fake_adv,        
                 mask_in=mask_in_adv,
                 mask_out=mask_out_adv,
                 z=None,
                 C=None
-            )  # (K_test,)
+            )
+
 
             gen_adv_loss = -fake_scores.mean()
 
             gen_loss = ce_loss + LAMBDA_ADV * gen_adv_loss
+
             gen_loss.backward()
+
+            for name, p in generator.named_parameters():
+                if p.grad is not None:
+                    if torch.isnan(p.grad).any():
+                        print(f"[PHASE3 GEN NaN GRAD] {name}")
+                    if torch.all(p.grad == 0):
+                        print(f"[PHASE3 GEN ZERO GRAD] {name}")
+
             gen_opt.step()
+
 
             total_gen_loss += gen_loss.item()
             n_gen_steps += 1

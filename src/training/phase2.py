@@ -1,6 +1,8 @@
 import torch
 from torch import autograd
 
+from src.training.utils_debug import report_param_stats
+
 from src.architecture.ViT.body import VisionTransformer
 from src.architecture.adViT.critic import AdversarialVisionTransformer
 from src.data_pipeline.dataloader import ARCDataModule
@@ -233,7 +235,24 @@ def train_critic_phase2(critic, data_loader):
 
             optimizer.zero_grad()
             loss.backward()
+
+            ###################################
+            #   DEBUG: Check Critic Gradients
+            ###################################
+            for name, p in critic.named_parameters():
+                if p.grad is None:
+                    print(f"[PHASE2 WARNING] No grad for {name}")
+                else:
+                    if torch.isnan(p.grad).any():
+                        print(f"[PHASE2 ERROR] NaN gradient detected in {name}")
+                    if torch.all(p.grad == 0):
+                        print(f"[PHASE2 WARNING] ZERO gradient in {name}")
+
+            # Optional (expensive): print weight + grad stats
+            # report_param_stats(critic, name="Phase2 Critic", max_layers=12)
+
             optimizer.step()
+
 
             total_loss += loss.item()
             total_batches += 1

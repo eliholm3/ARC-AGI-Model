@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from torch.distributions.normal import Normal
 
 from src.training.ppo_actor import PPOActor
 from src.training.ppo_value import PPOValuer
@@ -12,114 +13,77 @@ from src.architecture.ViT.body import VisionTransformer
 from src.architecture.LViTM.body import LargeVisionTransformerModel
 from src.architecture.executor.executor import Executor
 from src.architecture.adViT.critic import AdversarialVisionTransformer
-from src.data_pipeline.dataloader import ARCDataModule
 
+from src.data_pipeline.dataloader import ARCDataModule
 from src.inference.execution_controller import HybridExecuteController
 
 
-###############################
-#   Hyperparameters           #
-###############################
-
-PPO_EPOCHS = 3
-PPO_STEPS = 3
-PPO_GAMMA = 0.99
+############################################################
+#              ** PPO HYPERPARAMETERS **
+############################################################
+PPO_EPOCHS = 4
+PPO_STEPS = 8          # PPO rollout length
+PPO_GAMMA = 0.99       # reward discount
+PPO_LAMBDA = 0.95      # GAE lambda
+PPO_CLIP = 0.2
+PPO_LR = 1e-4
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_CLASSES = 10
+Z_DIM = 64
+NUM_PROPOSALS = 4
 
 
-###############################
-#   Build Generator Modules   #
-###############################
-
+############################################################
+#            Build All Components Cleanly
+############################################################
 def build_generator_components():
-    """
-    Rebuilds generator components individually (not the ARCGenerator wrapper).
-    Used to compute context C and supply modules to the controller.
-    """
+    img_size = 30
+    patch = 1
+    embed_dim = 128
+    heads = 4
+    depth_vit = 6
+    mlp_dim = 256
 
-    ###########################
-    #   Shared Hyperparams    #
-    ###########################
-
-    img_size   = 30
-    patch_size = 1
-    embed_dim  = 128
-    num_heads  = 4
-    depth_vit  = 6
-    mlp_dim    = 256
-    z_dim      = 64
-    num_props  = 4
-
-    ###############################
-    #   Vision Transformers       #
-    ###############################
-
-    # For example pairs (I, O) -> 2 channels
     vit_pair = VisionTransformer(
         img_size=img_size,
-        patch_size=patch_size,
+        patch_size=patch,
         embed_dim=embed_dim,
-        num_heads=num_heads,
+        num_heads=heads,
         depth=depth_vit,
         mlp_dim=mlp_dim,
         in_channels=2
     ).to(DEVICE)
 
-    # For test input I_test -> 1 channel
     vit_test = VisionTransformer(
         img_size=img_size,
-        patch_size=patch_size,
+        patch_size=patch,
         embed_dim=embed_dim,
-        num_heads=num_heads,
+        num_heads=heads,
         depth=depth_vit,
         mlp_dim=mlp_dim,
         in_channels=1
     ).to(DEVICE)
 
-    ###########################################
-    #   Context Encoders (Pair + Aggregator)  #
-    ###########################################
-
-    # Example pair encoder uses ViT with 2 input channels
     example_encoder = ExamplePairEncoder(vit_pair).to(DEVICE)
-
-    # Aggregator uses the same embedding dimension as ViTs
-    aggregator = ExamplePairAggregator(
-        embed_dim=vit_pair.c_token.size(-1)
-    ).to(DEVICE)
-
-    ###########################################
-    #   Conditional Test Input Encoder        #
-    ###########################################
-
-    # Conditional encoder uses the 1-channel ViT
+    aggregator = ExamplePairAggregator(embed_dim).to(DEVICE)
     cond_encoder = ConditionalTestInputEncoder(vit_test).to(DEVICE)
 
-    ###############################
-    #   Latent Proposal Model     #
-    ###############################
-
     lvitm = LargeVisionTransformerModel(
-        embed_dim=vit_pair.c_token.size(-1),
-        num_heads=4,
+        embed_dim=embed_dim,
+        num_heads=heads,
         mlp_dim=256,
         depth=8,
-        num_proposals=num_props,
-        z_dim=z_dim
+        num_proposals=NUM_PROPOSALS,
+        z_dim=Z_DIM
     ).to(DEVICE)
 
-    ###############################
-    #   Executor                  #
-    ###############################
-
     executor = Executor(
-        embed_dim=vit_pair.c_token.size(-1),
-        num_heads=4,
+        embed_dim=embed_dim,
+        num_heads=heads,
         mlp_dim=256,
         depth=4,
-        z_dim=z_dim,
+        z_dim=Z_DIM,
         hidden_channels=64,
         num_classes=NUM_CLASSES
     ).to(DEVICE)
@@ -128,60 +92,31 @@ def build_generator_components():
 
 
 
-###############################
-#   Build Critic              #
-###############################
-
 def build_critic():
-    from src.architecture.ViT.body import VisionTransformer
-    from src.architecture.adViT.critic import AdversarialVisionTransformer
-
-    img_size   = 30
-    patch_size = 1
-    embed_dim  = 128
-    num_heads  = 4
-    depth_vit  = 6
-    mlp_dim    = 256
-
-    # IMPORTANT: ALWAYS 2 CHANNELS
-    #   ch1 = I_test  (1 channel)
-    #   ch2 = O_real or O_fake (1 channel)
-    vit_critic = VisionTransformer(
-        img_size=img_size,
-        patch_size=patch_size,
-        embed_dim=embed_dim,
-        num_heads=num_heads,
-        depth=depth_vit,
-        mlp_dim=mlp_dim,
-        in_channels=2      
+    vit = VisionTransformer(
+        img_size=30,
+        patch_size=1,
+        embed_dim=128,
+        num_heads=4,
+        depth=6,
+        mlp_dim=256,
+        in_channels=2
     ).to(DEVICE)
 
-    critic = AdversarialVisionTransformer(
-        vit_encoder=vit_critic,
+    return AdversarialVisionTransformer(
+        vit_encoder=vit,
         z_dim=None,
         c_dim=None,
         hidden_dim=256
     ).to(DEVICE)
 
-    return critic
 
 
-
-###############################
-#   Compute Context C         #
-###############################
-
-def compute_context_C(
-        example_encoder: ExamplePairEncoder,
-        aggregator: ExamplePairAggregator,
-        train_inputs: torch.Tensor,        # (K_train,H,W)
-        train_outputs: torch.Tensor,       # (K_train,H,W)
-        train_input_masks: torch.Tensor,   # (K_train,H,W)
-        train_output_masks: torch.Tensor   # (K_train,H,W)
-):
-    """
-    Encodes all training example pairs and aggregates into context C.
-    """
+############################################################
+#         Compute Transformer Context C
+############################################################
+def compute_context(example_encoder, aggregator, train_inputs, train_outputs,
+                    train_input_masks, train_output_masks):
 
     if train_inputs.dim() == 3:
         train_inputs = train_inputs.unsqueeze(0)
@@ -189,56 +124,133 @@ def compute_context_C(
         train_input_masks = train_input_masks.unsqueeze(0)
         train_output_masks = train_output_masks.unsqueeze(0)
 
-    B, K_train, H, W = train_inputs.shape
-
+    B, K, H, W = train_inputs.shape
     h_list = []
 
-    for k in range(K_train):
+    for k in range(K):
         I_k = train_inputs[:, k].unsqueeze(1).float()
         O_k = train_outputs[:, k].unsqueeze(1).float()
 
-        mask_I_k = train_input_masks[:, k]
-        mask_O_k = train_output_masks[:, k]
+        mI = train_input_masks[:, k]
+        mO = train_output_masks[:, k]
 
-        h_k = example_encoder(
-            I_i=I_k,
-            O_i=O_k,
-            mask_I=mask_I_k,
-            mask_O=mask_O_k
-        )  # (B,D)
-        h_list.append(h_k)
+        h_list.append(example_encoder(I_k, O_k, mI, mO))
 
-    h = torch.stack(h_list, dim=1)   # (B,K_train,D)
-    pair_mask = None
-
-    C = aggregator(h, mask=pair_mask)  # (B,D)
-    return C
+    h = torch.stack(h_list, dim=1)
+    return aggregator(h, mask=None)
 
 
-###############################
-#   Phase 4 PPO Training      #
-###############################
 
-def train_phase4_ppo(data_loader: ARCDataModule):
-    # Build components
+############################################################
+#              PPO Rollout + Update
+############################################################
+def ppo_rollout(controller, init_grid, init_mask, C, actor, valuer):
+    """
+    Run a PPO rollout:
+       (1) sample z adjustments
+       (2) calculate reward from critic
+       (3) compute logprobs, advantages, returns
+    """
+
+    B, _, H, W = init_grid.shape
+
+    # Storage
+    states = []
+    actions = []
+    logprobs = []
+    values = []
+    rewards = []
+
+    grid = init_grid.clone()
+
+    for t in range(PPO_STEPS):
+
+        # Encode for LVITM proposals
+        tokens, padmask = controller.cond_encoder(grid, init_mask, C)
+        Z = controller.lvitm(C, tokens, padmask)  # (B,T,z_dim)
+
+        # Actor samples "action" = Δz shift
+        mu, log_std = actor(Z)
+        std = torch.exp(log_std)
+        dist = Normal(mu, std)
+
+        action = dist.sample()           # (B,T,z_dim)
+        logp = dist.log_prob(action).sum(dim=-1)  # (B,T)
+
+        # Apply action (shift proposals)
+        Z_refined = Z + 0.1 * action
+
+        # Execute each proposal
+        B,T,z_dim = Z_refined.shape
+        grid_batch = grid.unsqueeze(1).expand(B,T,1,H,W).reshape(B*T,1,H,W)
+        z_flat = Z_refined.reshape(B*T,z_dim)
+
+        logits = controller.executor(grid_batch, z_flat)
+        logits = logits.view(B,T,NUM_CLASSES,H,W)
+
+        # Critic gives reward
+        reward = controller.critic(
+            I_in=grid,
+            O_pred=logits,
+            mask_in=init_mask,
+            mask_out=init_mask,
+            z=Z_refined,
+            C=C
+        )  # (B,T)
+
+        # Value estimate
+        value = valuer(Z)  # (B,T)
+
+        # Store trajectory
+        states.append(Z)
+        actions.append(action)
+        logprobs.append(logp)
+        values.append(value)
+        rewards.append(reward)
+
+        # Select best output for next state
+        best_idx = reward.argmax(dim=1)  # (B)
+        idx = best_idx.view(B,1,1,1,1).expand(B,1,NUM_CLASSES,H,W)
+        best_logits = logits.gather(dim=1, index=idx).squeeze(1)
+        grid = best_logits.argmax(dim=1, keepdim=True).float()
+
+    # Convert lists to tensors:
+    states = torch.stack(states, dim=0)      # (T,B,P,D)
+    actions = torch.stack(actions, dim=0)    # (T,B,P,D)
+    logprobs = torch.stack(logprobs, dim=0)  # (T,B,P)
+    values = torch.stack(values, dim=0)      # (T,B,P)
+    rewards = torch.stack(rewards, dim=0)    # (T,B,P)
+
+    return states, actions, logprobs, values, rewards
+
+
+
+def compute_gae(values, rewards):
+    """
+    Generalized Advantage Estimation (GAE-Lambda)
+    """
+    T, B, P = rewards.shape
+    advantages = torch.zeros_like(rewards)
+    gae = torch.zeros(B, P, device=DEVICE)
+
+    for t in reversed(range(T)):
+        delta = rewards[t] + PPO_GAMMA * (values[t+1] if t < T-1 else 0) - values[t]
+        gae = delta + PPO_GAMMA * PPO_LAMBDA * gae
+        advantages[t] = gae
+
+    returns = advantages + values
+    return advantages, returns
+
+
+
+############################################################
+#                   ** PHASE 4 MAIN **
+############################################################
+def train_phase4_ppo(data_loader):
+    # Build models
     example_encoder, aggregator, cond_encoder, lvitm, executor = build_generator_components()
     critic = build_critic()
 
-    # Load Phase 3 checkpoints if available
-    try:
-        gen_state = torch.load("generator_phase3_adv.pt", map_location=DEVICE)
-        print("Loaded generator_phase3_adv.pt into generator components (partial load).")
-        # You can do partial loads into submodules here if you saved them modularly.
-    except FileNotFoundError:
-        print("Phase 3 generator checkpoint not found. Using fresh generator components.")
-
-    try:
-        critic.load_state_dict(torch.load("critic_phase3_adv.pt", map_location=DEVICE))
-        print("Loaded critic_phase3_adv.pt.")
-    except FileNotFoundError:
-        print("Phase 3 critic checkpoint not found. Using fresh critic.")
-
-    # Controller with critic
     controller = HybridExecuteController(
         lvitm=lvitm,
         executor=executor,
@@ -246,87 +258,77 @@ def train_phase4_ppo(data_loader: ARCDataModule):
         critic=critic
     ).to(DEVICE)
 
-    # PPO modules
-    z_dim = 64   # must match LViTM z_dim
-    actor = PPOActor(z_dim=z_dim, embed_dim=256).to(DEVICE)
-    value_fn = PPOValuer(z_dim=z_dim, embed_dim=256).to(DEVICE)
-    ppo_refiner = PPORefiner(actor=actor, value_fn=value_fn, lr=1e-4)
+    actor = PPOActor(z_dim=Z_DIM, embed_dim=256).to(DEVICE)
+    valuer = PPOValuer(z_dim=Z_DIM, embed_dim=256).to(DEVICE)
+    optimizer = torch.optim.Adam(list(actor.parameters()) + list(valuer.parameters()), lr=PPO_LR)
 
+    # MAIN TRAIN LOOP
     for epoch in range(PPO_EPOCHS):
-        print(f"\n=== Phase 4 PPO Epoch {epoch + 1}/{PPO_EPOCHS} ===")
+        print(f"\n==== PPO Epoch {epoch+1}/{PPO_EPOCHS} ====")
 
         for batch_idx, batch in enumerate(data_loader):
-
-            ###############################
-            #   Move batch to device      #
-            ###############################
-
             for k, v in batch.items():
                 if torch.is_tensor(v):
                     batch[k] = v.to(DEVICE)
 
-            train_inputs       = batch["train_inputs"]
-            train_outputs      = batch["train_outputs"]
-            train_input_masks  = batch["train_input_masks"]
-            train_output_masks = batch["train_output_masks"]
+            train_in = batch["train_inputs"]
+            train_out = batch["train_outputs"]
+            train_inm = batch["train_input_masks"]
+            train_outm = batch["train_output_masks"]
 
-            test_inputs        = batch["test_inputs"]
-            test_outputs       = batch["test_outputs"]
-            test_input_masks   = batch["test_input_masks"]
+            test_in = batch["test_inputs"]
+            test_inm = batch["test_input_masks"]
+            test_out = batch["test_outputs"]
 
-            # Compute context C
-            C = compute_context_C(
-                example_encoder=example_encoder,
-                aggregator=aggregator,
-                train_inputs=train_inputs,
-                train_outputs=train_outputs,
-                train_input_masks=train_input_masks,
-                train_output_masks=train_output_masks
-            )  # (1,D)
+            C = compute_context(example_encoder, aggregator,
+                                train_in, train_out, train_inm, train_outm)
 
-            # Pick first test input as initial grid
-            if test_inputs.dim() == 3:
-                test_inputs = test_inputs.unsqueeze(0)
-                test_input_masks = test_input_masks.unsqueeze(0)
-                test_outputs = test_outputs.unsqueeze(0)
+            if test_in.dim() == 3:
+                test_in = test_in.unsqueeze(0)
+                test_inm = test_inm.unsqueeze(0)
+                test_out = test_out.unsqueeze(0)
 
-            B, K_test, H, W = test_inputs.shape
-            init_grid = test_inputs[:, 0].unsqueeze(1).float()       # (B,1,H,W)
-            init_mask = test_input_masks[:, 0]                        # (B,H,W)
-            target = test_outputs[:, 0]                               # (B,H,W)
+            B, K, H, W = test_in.shape
+            init_grid = test_in[:,0].unsqueeze(1).float()
+            init_mask = test_inm[:,0]
 
-            ###############################
-            #   PPO Rollout & Update      #
-            ###############################
-
-            final_logits, ppo_stats = controller.ppo_rollout_and_update(
-                init_grid=init_grid,
-                init_mask=init_mask,
-                C=C,
-                ppo_refiner=ppo_refiner,
-                num_steps=PPO_STEPS,
-                gamma=PPO_GAMMA
+            # === PPO Rollout ===
+            states, actions, old_logp, values, rewards = ppo_rollout(
+                controller, init_grid, init_mask, C, actor, valuer
             )
 
-            # Optional: supervised signal on final prediction
-            pred_loss = F.cross_entropy(
-                final_logits,          # (B,C_out,H,W)
-                target.long()          # (B,H,W)
-            )
+            advantages, returns = compute_gae(values, rewards)
 
-            pred_loss.backward()
-            # NOTE: If you want to train executor/LViTM jointly with PPO, you can
-            # attach an optimizer here and step it. For now, PPORefiner.update()
-            # already steps the actor/value networks.
+            # === PPO UPDATE ===
+            optimizer.zero_grad()
 
-            print(f"Epoch {epoch+1}, Batch {batch_idx}: "
-                  f"PPO loss={ppo_stats['loss']:.4f}, "
-                  f"policy={ppo_stats['policy_loss']:.4f}, "
-                  f"value={ppo_stats['value_loss']:.4f}, "
-                  f"entropy={ppo_stats['entropy']:.4f}")
-            
-    return actor, value_fn
+            T,B,P,D = states.shape
+            states = states.detach()
+            actions = actions.detach()
+            advantages = advantages.detach()
+            returns = returns.detach()
+            old_logp = old_logp.detach()
+
+            mu, log_std = actor(states)
+            dist = Normal(mu, torch.exp(log_std))
+            new_logp = dist.log_prob(actions).sum(dim=-1)
+
+            ratio = torch.exp(new_logp - old_logp)
+            clipped = torch.clamp(ratio, 1-PPO_CLIP, 1+PPO_CLIP)
+
+            policy_loss = -torch.min(ratio * advantages, clipped * advantages).mean()
+            value_loss = F.mse_loss(valuer(states), returns)
+            entropy = dist.entropy().mean()
+
+            loss = policy_loss + 0.5*value_loss - 0.01*entropy
+            loss.backward()
+            optimizer.step()
+
+            print(f"[PPO] Batch {batch_idx} | loss={loss.item():.4f} | policy={policy_loss.item():.4f}")
+
+    return actor, valuer
+
 
 
 if __name__ == "__main__":
-    train_phase4_ppo()
+    train_phase4_ppo(ARCDataModule)

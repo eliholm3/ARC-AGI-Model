@@ -3,6 +3,8 @@ import torch.nn.functional as F
 from torch.optim import Adam
 from tqdm import tqdm
 
+from src.training.utils_debug import report_param_stats
+
 # Import your modules
 from src.inference.generator import ARCGenerator
 
@@ -144,6 +146,7 @@ def train_phase1(arc_loader):
             test_inputs        = batch["test_inputs"]
             test_outputs       = batch["test_outputs"]
             test_input_masks   = batch["test_input_masks"]
+            test_output_masks  = batch["test_output_masks"] 
 
             ############################################################
             #   Forward through ARCGenerator                           #
@@ -161,17 +164,31 @@ def train_phase1(arc_loader):
             B, K_test, C_out, H, W = logits.shape
 
             ############################################################
-            #   CE loss: reshape logits & targets                     #
+            #   Clean CE Loss (NO NaNs)
             ############################################################
             logits_flat = logits.view(B * K_test, C_out, H, W)
             target_flat = test_outputs.view(B * K_test, H, W)
 
-            loss = F.cross_entropy(logits_flat, target_flat, ignore_index=0)
+            # Correct padded-area masking
+            PAD_TOKEN = -100
+            targets = target_flat.clone()
+            pad_mask = ~test_output_masks.view(B*K_test, H, W).bool()
+            targets[pad_mask] = PAD_TOKEN
 
-            ###########################
-            #   Backprop & optimize   #
-            ###########################
+            # Compute valid-mask CE loss
+            per_pixel = F.cross_entropy(
+                logits_flat,
+                targets,
+                ignore_index=PAD_TOKEN,
+                reduction="none"
+            )
 
+            valid_mask = (targets != PAD_TOKEN).float()
+            loss = (per_pixel * valid_mask).sum() / valid_mask.sum()
+
+            ############################################################
+            #   Backprop without spam
+            ############################################################
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
