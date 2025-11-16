@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 from src.architecture.executor.CNNBlock import CNNBlock
 from src.architecture.ViT.body import TransformerEncoderBlock
-
+import os
+from dotenv import load_dotenv
 
 # Hybrid ViT and CNN
 class Executor(nn.Module):
@@ -139,5 +140,7 @@ class Executor(nn.Module):
 
         # Compute on the embedding dimension
         logits = self.discretizer(x_feats)  # (B, num_classes, H, W)
+
+        print("\n[Executor] logits mean/std:", logits.mean().item(), logits.std().item())
 
         return logits

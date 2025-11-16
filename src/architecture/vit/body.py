@@ -1,7 +1,9 @@
 import torch
 import torch.nn as nn
 from src.architecture.ViT.attention import MultiHeadAttention
-from src.architecture.ViT.preprocessing import PatchEmbedding, PositionalEncoding    
+from src.architecture.ViT.preprocessing import PatchEmbedding, PositionalEncoding   
+import os
+from dotenv import load_dotenv 
 
 class VisionTransformer(nn.Module):
     def __init__(
@@ -15,6 +17,9 @@ class VisionTransformer(nn.Module):
             in_channels=1
     ):
         super().__init__()
+
+        load_dotenv()
+        self.DEBUGGING = os.getenv("DEBUGGING")
 
         ########################
         #   Patch Embeddings   #
@@ -59,7 +64,7 @@ class VisionTransformer(nn.Module):
     def forward(
             self, 
             x, 
-            mask
+            mask=None
     ):
         #################################
         #    B = batch size             #
@@ -67,51 +72,76 @@ class VisionTransformer(nn.Module):
         #    D = embedding dimension    #
         #################################
 
-        B = x.size(0) 
+        B = x.size(0)
 
-        x = self.patch_embedding(x) # (B, N, D)
+        # Patch embedding: (B, C, H, W) -> (B, N, D)
+        x = self.patch_embedding(x)  # (B, N, D)
+        B_, N, D = x.shape
 
-        # Flatten mask 
+        ##############################
+        #   Build key_padding_mask   #
+        ##############################
+        # We expect `mask` to be a "valid" mask:
+        #   - shape (B, H, W) or (B, N)
+        #   - True where the token is VALID (not padding)
+
         if mask is not None:
-            mask = mask.reshape(x.size(0), -1)  # (B, H, W) -> (B, N)
+            # If spatial (B, H, W), flatten to (B, N)
+            if mask.dim() == 3:
+                mask = mask.view(B_, -1)      # (B, N)
+            else:
+                mask = mask.view(B_, -1)      # (B, N)
 
-        # Prepend context token mask
-        if mask is not None:
-            c_mask = torch.zeros((mask.size(0), 1), dtype=torch.bool, device=mask.device)
-            mask = torch.cat([c_mask, mask], dim=1)  # (B, 1+N)
-            mask = mask.to(torch.bool)
+            # Sanity check: mask length must match number of patches
+            if mask.size(1) != N:
+                raise ValueError(
+                    f"VisionTransformer: mask length {mask.size(1)} "
+                    f"does not match number of patches {N}"
+                )
 
-        # Convert mask to padding mask
-        # mask: (B, H, W) or None
-        if mask is not None:
-            # Convert spatial mask (B,H,W) → token mask (B,N)
-            mask_flat = mask.flatten(1)      # (B, H*W)
-            key_padding_mask = ~mask_flat    # invert boolean mask
+            # Prepend a valid mask entry for the context token
+            c_mask = torch.ones(B_, 1, dtype=torch.bool, device=mask.device)  # context is always valid
+            keep_mask = torch.cat([c_mask, mask.to(torch.bool)], dim=1)       # (B, 1+N), True = keep
+
+            # PyTorch attention expects key_padding_mask: True = PAD
+            key_padding_mask = ~keep_mask                                     # (B, 1+N)
         else:
             key_padding_mask = None
 
+        ########################
+        #   Prepend context    #
+        ########################
 
+        c = self.c_token.expand(B_, -1, -1)   # (B, 1, D)
+        x = torch.cat([c, x], dim=1)          # (B, 1+N, D)
 
-        # Prepend context
-        c = self.c_token.expand(B, -1, -1)
-        x = torch.cat([c, x], dim=1)
-
-        x = self.pos_encoding(x) 
+        x = self.pos_encoding(x)
         x = self.dropout(x)
 
-        for block in self.transformer_blocks: # run through sequence of vision transformer blocks
+        for block in self.transformer_blocks:
             x = block(x, key_padding_mask)
-        
+
         x = self.fLayerNorm(x)
 
-        return x # (B, 1+N, D)
+        return x  # (B, 1+N, D)
+
     
     def forward_grid(
             self, 
             x, 
             mask=None
     ):
+        
+        print("\n[ViT.forward_grid] x input:", x.shape)
+        if mask is not None:
+            if self.DEBUGGING:
+                print("[ViT.forward_grid] mask shape:", mask.shape)
+
         tokens = self.forward(x, mask)
+        ctx = tokens[:,0]
+        if self.DEBUGGING:
+            print("[ViT.forward_grid] ctx mean/std:", ctx.mean().item(), ctx.std().item())
+
         return tokens[:, 0] # context embedding
 
 class TransformerEncoderBlock(nn.Module):

@@ -24,7 +24,7 @@ from src.inference.execution_controller import HybridExecuteController
 ###############################
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-NUM_CLASSES = 10
+NUM_CLASSES = 11
 
 
 ###############################

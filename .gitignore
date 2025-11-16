@@ -1,4 +1,5 @@
 data_vit/
+*.pt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

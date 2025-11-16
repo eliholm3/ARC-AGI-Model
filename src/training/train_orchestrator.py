@@ -164,6 +164,8 @@ def main():
 
     args = parser.parse_args()
 
+    run_phase1()
+
     for phase in range(args.start_phase, args.end_phase + 1):
         if phase == 1:
             run_phase1()

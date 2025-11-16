@@ -29,6 +29,10 @@ class PPOValuer(nn.Module):
             self,
             Z   # (B, P, z_dim)
     ):
-        B, T, D = Z.shape
-        values = self.net(Z.view(B*T, D)).view(B, T)
-        return values
+        *prefix, D = Z.shape
+        Z_flat = Z.view(-1, D)
+
+        # FIX: use the correct attribute
+        v_flat = self.net(Z_flat).squeeze(-1)
+
+        return v_flat.view(*prefix)

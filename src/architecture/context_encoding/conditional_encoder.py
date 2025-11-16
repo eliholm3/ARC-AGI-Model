@@ -41,13 +41,15 @@ class ConditionalTestInputEncoder(nn.Module):
         #   Build Test Mask   #
         #######################
 
+        key_padding_mask = None
         if mask_test is not None:
-            flat_mask = mask_test.reshape(B, -1)  # (B, S)
-            key_padding_mask = ~flat_mask         # True = pad
-        else:
-            key_padding_mask = None
-        
-        key_padding_mask = key_padding_mask.to(torch.bool)
+            # Ensure batch dimension exists
+            if mask_test.dim() == 2:  # (H, W) -> (1, H, W)
+                mask_test = mask_test.unsqueeze(0)
+
+            # mask_test: (B, H, W), True = valid
+            flat_mask = mask_test.reshape(B, -1)      # (B, S)
+            key_padding_mask = ~flat_mask.to(torch.bool)  # True = pad
 
         ##########################
         #   Add Context Vector   #
@@ -67,5 +69,10 @@ class ConditionalTestInputEncoder(nn.Module):
 
         tokens = self.vit.pos_encoding(tokens)
         tokens = self.vit.dropout(tokens)
+
+        print("\n[CondEncoder] tokens shape:", tokens.shape)
+        if key_padding_mask is not None:
+            print("[CondEncoder] key_padding_mask shape:", key_padding_mask.shape)
+
 
         return tokens, key_padding_mask

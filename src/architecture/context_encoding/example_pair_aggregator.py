@@ -35,10 +35,14 @@ class ExamplePairAggregator(nn.Module):
         #   D = embedding dimension   #
         ###############################
 
+        print("\n[Aggregator] h shape:", h.shape)
+
         B, K, D = h.shape
 
         # Infer scores
         scores = self.score_mlp(h)
+
+        print("[Aggregator] scores:", scores.detach().cpu().view(-1)[:10])
 
         # Mask = where the tokens are
         if mask is not None:
@@ -54,6 +58,8 @@ class ExamplePairAggregator(nn.Module):
 
         # Attention weights over k example pairs
         attn = F.softmax(scores, dim=1)
+
+        print("[Aggregator] attn weights (sample):", attn[0,:].detach().cpu())
 
         # Weighted sum
         C = torch.sum(attn * h, dim=1)

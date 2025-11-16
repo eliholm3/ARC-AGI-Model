@@ -3,12 +3,8 @@ import torch.nn.functional as F
 from torch.optim import Adam
 from tqdm import tqdm
 
-from src.training.utils_debug import report_param_stats
-
 # Import your modules
 from src.inference.generator import ARCGenerator
-
-# Encoders & components
 from src.architecture.context_encoding.example_pair_encoder import ExamplePairEncoder
 from src.architecture.context_encoding.example_pair_aggregator import ExamplePairAggregator
 from src.architecture.context_encoding.conditional_encoder import ConditionalTestInputEncoder
@@ -18,21 +14,16 @@ from src.architecture.ViT.body import VisionTransformer
 
 # Training constants
 LR = 1e-4
-EPOCHS = 5
+EPOCHS = 100
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_CLASSES = 11
 
 
 ##############################################################
-#   Build MODEL for PHASE 1 using TWO separate ViTs          #
+#   Build MODEL for PHASE 1 using TWO separate ViTs
 ##############################################################
 def build_model():
 
-    ##############################################################
-    #   1. Vision Transformers                                   #
-    #      vit_pair = (I, O) example pairs, 2 channels           #
-    #      vit_test = I_test only, 1 channel                     #
-    ##############################################################
     img_size   = 30
     patch_size = 1
     embed_dim  = 128
@@ -42,7 +33,7 @@ def build_model():
     z_dim      = 64
     num_props  = 4
 
-    # Example pair ViT: (I_i, O_i) → 2 channels
+    # For (I,O) pairs
     vit_pair = VisionTransformer(
         img_size=img_size,
         patch_size=patch_size,
@@ -53,7 +44,7 @@ def build_model():
         in_channels=2
     ).to(DEVICE)
 
-    # Test grid ViT: (I_test) → 1 channel
+    # For test input
     vit_test = VisionTransformer(
         img_size=img_size,
         patch_size=patch_size,
@@ -64,20 +55,10 @@ def build_model():
         in_channels=1
     ).to(DEVICE)
 
-    ##############################################################
-    #   2. Context encoding components                           #
-    ##############################################################
     example_encoder = ExamplePairEncoder(vit_pair).to(DEVICE)
-
-    aggregator = ExamplePairAggregator(
-        embed_dim=vit_pair.c_token.size(-1)
-    ).to(DEVICE)
-
+    aggregator = ExamplePairAggregator(embed_dim=vit_pair.c_token.size(-1)).to(DEVICE)
     cond_encoder = ConditionalTestInputEncoder(vit_test).to(DEVICE)
 
-    ##############################################################
-    #   3. LVITM (reasoning / proposal generation)               #
-    ##############################################################
     lvitm = LargeVisionTransformerModel(
         embed_dim=vit_pair.c_token.size(-1),
         num_heads=4,
@@ -87,9 +68,6 @@ def build_model():
         z_dim=z_dim
     ).to(DEVICE)
 
-    ##############################################################
-    #   4. Executor                                              #
-    ##############################################################
     executor = Executor(
         embed_dim=vit_pair.c_token.size(-1),
         num_heads=4,
@@ -100,9 +78,6 @@ def build_model():
         num_classes=NUM_CLASSES
     ).to(DEVICE)
 
-    ##############################################################
-    #   5. Wrap everything into ARCGenerator                     #
-    ##############################################################
     generator = ARCGenerator(
         example_pair_encoder=example_encoder,
         aggregator=aggregator,
@@ -115,29 +90,36 @@ def build_model():
 
 
 ##############################################################
-#   Phase 1 Supervised Training                              #
+#   PHASE 1 TRAINING LOOP
 ##############################################################
 def train_phase1(arc_loader):
 
     generator = build_model()
     optimizer = Adam(generator.parameters(), lr=LR)
-
     generator.train()
 
-    for epoch in tqdm(range(EPOCHS), "Epoch:"):
+    for epoch in tqdm(range(EPOCHS), desc="Epoch:"):
         print(f"\n=== Epoch {epoch+1}/{EPOCHS} ===")
 
         total_loss = 0.0
         count = 0
 
-        for batch in tqdm(arc_loader, "Batch:"):
+        for batch in tqdm(arc_loader, desc="Batch:"):
+
             ############################################################
-            #   Move batch to device                                  #
+            #   Move batch to device
             ############################################################
-            for k, v in tqdm(batch.items(), "Sample:"):
+            for k, v in batch.items():
                 if torch.is_tensor(v):
                     batch[k] = v.to(DEVICE)
 
+            # === FIX 1: All masks must be boolean ===
+            batch["train_input_masks"]  = batch["train_input_masks"].bool()
+            batch["train_output_masks"] = batch["train_output_masks"].bool()
+            batch["test_input_masks"]   = batch["test_input_masks"].bool()
+            batch["test_output_masks"]  = batch["test_output_masks"].bool()
+
+            # Extract tensors
             train_inputs       = batch["train_inputs"]
             train_outputs      = batch["train_outputs"]
             train_input_masks  = batch["train_input_masks"]
@@ -146,10 +128,10 @@ def train_phase1(arc_loader):
             test_inputs        = batch["test_inputs"]
             test_outputs       = batch["test_outputs"]
             test_input_masks   = batch["test_input_masks"]
-            test_output_masks  = batch["test_output_masks"] 
+            test_output_masks  = batch["test_output_masks"]
 
             ############################################################
-            #   Forward through ARCGenerator                           #
+            #   Forward through ARCGenerator
             ############################################################
             out = generator(
                 train_inputs=train_inputs,
@@ -161,21 +143,24 @@ def train_phase1(arc_loader):
             )
 
             logits = out["logits"]  # (B, K_test, C_out, H, W)
+
+            # === FIX 3: sanitize logits to prevent NaN/Inf propagation ===
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=1e4, neginf=-1e4)
+
             B, K_test, C_out, H, W = logits.shape
 
             ############################################################
-            #   Clean CE Loss (NO NaNs)
+            #   Clean CE Loss (Masked)
             ############################################################
             logits_flat = logits.view(B * K_test, C_out, H, W)
             target_flat = test_outputs.view(B * K_test, H, W)
 
-            # Correct padded-area masking
             PAD_TOKEN = -100
             targets = target_flat.clone()
+
             pad_mask = ~test_output_masks.view(B*K_test, H, W).bool()
             targets[pad_mask] = PAD_TOKEN
 
-            # Compute valid-mask CE loss
             per_pixel = F.cross_entropy(
                 logits_flat,
                 targets,
@@ -187,7 +172,7 @@ def train_phase1(arc_loader):
             loss = (per_pixel * valid_mask).sum() / valid_mask.sum()
 
             ############################################################
-            #   Backprop without spam
+            #   Backprop
             ############################################################
             optimizer.zero_grad()
             loss.backward()
@@ -203,11 +188,11 @@ def train_phase1(arc_loader):
 
 
 ##############################################################
-#   Script Entry Point                                        #
-# ##############################################################
+#   Script Entry Point
+##############################################################
 # if __name__ == "__main__":
 #     from src.data_pipeline.dataloader import ARCDataModule
-
+#
 #     model = train_phase1(ARCDataModule)
 #     torch.save(model.state_dict(), "phase1_generator.pt")
 #     print("Saved Phase 1 generator.")

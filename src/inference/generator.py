@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 from typing import Dict, Any
-
+import os
+from dotenv import load_dotenv
 
 class ARCGenerator(nn.Module):
     """
@@ -43,16 +44,20 @@ class ARCGenerator(nn.Module):
         #   Normalize Batch Dimensions   #
         ##################################
 
-        # If no batch dimension, assume B=1 and add it.
+        load_dotenv()
+        DEBUGGING = os.getenv("DEBUGGING")
+
+        # Ensure batch dimension exists
         if train_inputs.dim() == 3:
-            train_inputs = train_inputs.unsqueeze(0)
-            train_outputs = train_outputs.unsqueeze(0)
-            train_input_masks = train_input_masks.unsqueeze(0)
+            train_inputs       = train_inputs.unsqueeze(0)
+            train_outputs      = train_outputs.unsqueeze(0)
+            train_input_masks  = train_input_masks.unsqueeze(0)
             train_output_masks = train_output_masks.unsqueeze(0)
 
         if test_inputs.dim() == 3:
-            test_inputs = test_inputs.unsqueeze(0)
-            test_input_masks = test_input_masks.unsqueeze(0)
+            test_inputs       = test_inputs.unsqueeze(0)
+            test_input_masks  = test_input_masks.unsqueeze(0)
+
 
         B, K_train, H, W = train_inputs.shape
         _, K_test, H_t, W_t = test_inputs.shape
@@ -62,6 +67,13 @@ class ARCGenerator(nn.Module):
         train_input_masks = train_input_masks.bool()
         train_output_masks = train_output_masks.bool()
         test_input_masks = test_input_masks.bool()
+
+        if DEBUGGING:  # toggle debug
+            print("\n[ARCGenerator] train_inputs:", train_inputs.shape)
+            print("[ARCGenerator] test_inputs:", test_inputs.shape)
+            print("[ARCGenerator] train_input_masks:", train_input_masks.shape)
+            print("[ARCGenerator] test_input_masks:", test_input_masks.shape)
+
 
         #########################################
         #   Encode ALL training example pairs   #
@@ -98,6 +110,10 @@ class ARCGenerator(nn.Module):
 
         # Single context vector per sample, shared by all test pairs.
         C = self.aggregator(h, mask=pair_mask)  # (B, D)
+
+        if DEBUGGING:
+            print("[ARCGenerator] C mean/std:", C.mean().item(), C.std().item())
+
 
         # ----------------------------------
         #   Loop over ALL test inputs
@@ -150,11 +166,23 @@ class ARCGenerator(nn.Module):
         # logits: (B, K_test, num_classes, H, W)
         logits = torch.stack(all_logits, dim=1)
 
+        # Sanitize logits to avoid NaNs/Infs propagating into losses
+        logits = torch.nan_to_num(
+            logits,
+            nan=0.0,
+            posinf=1e4,
+            neginf=-1e4,
+        )
+
         # Z_all: (B, K_test, P, z_dim)
         Z_all = torch.stack(all_Z, dim=1)
 
         # z_chosen: (B, K_test, z_dim)
         z_chosen = torch.stack(all_z_chosen, dim=1)
+
+        if DEBUGGING:
+            print("[ARCGenerator] logits mean/std:", logits.mean().item(), logits.std().item())
+
 
         return {
             "logits": logits,         # (B, K_test, C_out, H, W)
