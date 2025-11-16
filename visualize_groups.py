@@ -53,8 +53,12 @@ def _validate_grid(g: List[List[int]], name="grid"):
         raise ValueError(f"{name} must be a non-empty rectangular 2D list of ints.")
     for y, row in enumerate(g):
         for x, v in enumerate(row):
-            if not (0 <= int(v) <= 9):
-                raise ValueError(f"{name}[{y}][{x}]={v} not in [0..9].")
+            # Allow either 0-based or 1-based ARC color indices, but clamp to the
+            # palette size. We detect the convention in _grid_to_image.
+            if not (0 <= int(v) <= len(ARC_COLORS)):
+                raise ValueError(
+                    f"{name}[{y}][{x}]={v} not in [0..{len(ARC_COLORS)}]."
+                )
 
 def _normalize_grid(g: List[List[int]]) -> List[List[int]]:
     """Pad ragged rows (shouldn't happen if validated) and return a copy."""
@@ -93,8 +97,26 @@ def _load_groups(path: Path) -> Dict[str, List[List[List[int]]]]:
 # -------- rasterization --------
 def _grid_to_image(grid: List[List[int]], cell=CELL_SIZE, draw_grid=True) -> Image.Image:
     _validate_grid(grid)
-    arr = np.array(grid, dtype=np.int16)          # HxW
-    rgb = PALETTE_RGB[arr]                        # HxWx3
+    arr = np.array(grid, dtype=np.int16)          # HxW, values in [0..len(ARC_COLORS)]
+
+    # Auto-detect convention:
+    # - If there is at least one 0, treat as 0-based (valid range 0..len-1).
+    # - Otherwise, treat as 1-based (valid range 1..len), and subtract 1.
+    has_zero = (arr == 0).any()
+    if has_zero:
+        if arr.max() > len(PALETTE_RGB) - 1:
+            raise ValueError(
+                f"Grid uses 0-based colors but has value > {len(PALETTE_RGB)-1}."
+            )
+        idx = arr
+    else:
+        if arr.min() < 1 or arr.max() > len(PALETTE_RGB):
+            raise ValueError(
+                f"Grid uses 1-based colors but has value outside [1..{len(PALETTE_RGB)}]."
+            )
+        idx = arr - 1
+
+    rgb = PALETTE_RGB[idx]                        # HxWx3
     img = np.kron(rgb, np.ones((cell,cell,1), dtype=np.uint8))
     if draw_grid and cell >= 8:
         img[::cell,:,:] = GRID_COLOR; img[-1,:,:] = GRID_COLOR
@@ -283,3 +305,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
