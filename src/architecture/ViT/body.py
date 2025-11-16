@@ -132,15 +132,15 @@ class VisionTransformer(nn.Module):
             mask=None
     ):
         
-        print("\n[ViT.forward_grid] x input:", x.shape)
-        if mask is not None:
-            if self.DEBUGGING:
-                print("[ViT.forward_grid] mask shape:", mask.shape)
+        # print("\n[ViT.forward_grid] x input:", x.shape)
+        # if mask is not None:
+        #     if self.DEBUGGING:
+        #         print("[ViT.forward_grid] mask shape:", mask.shape)
 
         tokens = self.forward(x, mask)
         ctx = tokens[:,0]
-        if self.DEBUGGING:
-            print("[ViT.forward_grid] ctx mean/std:", ctx.mean().item(), ctx.std().item())
+        # if self.DEBUGGING:
+        #     print("[ViT.forward_grid] ctx mean/std:", ctx.mean().item(), ctx.std().item())
 
         return tokens[:, 0] # context embedding
 

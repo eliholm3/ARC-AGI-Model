@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import Adam
 from tqdm import tqdm
+from src.training.metrics import ensure_dir, save_loss_plot, append_metrics_csv
 
 # Import your modules
 from src.inference.generator import ARCGenerator
@@ -14,7 +15,7 @@ from src.architecture.ViT.body import VisionTransformer
 
 # Training constants
 LR = 1e-4
-EPOCHS = 100
+EPOCHS = 75
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_CLASSES = 11
 
@@ -26,10 +27,10 @@ def build_model():
 
     img_size   = 30
     patch_size = 1
-    embed_dim  = 128
+    embed_dim  = 256
     num_heads  = 4
     depth_vit  = 6
-    mlp_dim    = 256
+    mlp_dim    = 512
     z_dim      = 64
     num_props  = 4
 
@@ -61,9 +62,9 @@ def build_model():
 
     lvitm = LargeVisionTransformerModel(
         embed_dim=vit_pair.c_token.size(-1),
-        num_heads=4,
+        num_heads=8,
         mlp_dim=256,
-        depth=8,
+        depth=10,
         num_proposals=num_props,
         z_dim=z_dim
     ).to(DEVICE)
@@ -71,8 +72,8 @@ def build_model():
     executor = Executor(
         embed_dim=vit_pair.c_token.size(-1),
         num_heads=4,
-        mlp_dim=256,
-        depth=4,
+        mlp_dim=512,
+        depth=6,
         z_dim=z_dim,
         hidden_channels=64,
         num_classes=NUM_CLASSES
@@ -97,9 +98,12 @@ def train_phase1(arc_loader):
     generator = build_model()
     optimizer = Adam(generator.parameters(), lr=LR)
     generator.train()
+    # Ensure checkpoint directory exists and track train losses
+    ensure_dir("checkpoints")
+    train_losses = []
 
     for epoch in tqdm(range(EPOCHS), desc="Epoch:"):
-        print(f"\n=== Epoch {epoch+1}/{EPOCHS} ===")
+        # print(f"\n=== Epoch {epoch+1}/{EPOCHS} ===")
 
         total_loss = 0.0
         count = 0
@@ -183,6 +187,14 @@ def train_phase1(arc_loader):
 
         avg_loss = total_loss / count
         print(f"Epoch {epoch+1} - Avg Loss: {avg_loss:.4f}")
+
+        # Append and save evolving loss plot (no display)
+        train_losses.append(avg_loss)
+        try:
+            save_loss_plot(train_losses, None, out_path="checkpoints/phase1_loss.png")
+            append_metrics_csv("checkpoints/phase1_metrics.csv", {"epoch": epoch + 1, "train_loss": avg_loss})
+        except Exception as e:
+            print(f"[phase1] Warning: failed to save loss plot/metrics: {e}")
 
     return generator
 

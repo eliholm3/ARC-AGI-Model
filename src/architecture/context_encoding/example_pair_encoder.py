@@ -30,12 +30,12 @@ class ExamplePairEncoder(nn.Module):
         # Combine masks: True = valid (NOT padded)
         mask = torch.logical_or(mask_I, mask_O)  # (B, H, W)
 
-        print("\n[ExamplePairEncoder] I_i:", I_i.shape)
-        print("[ExamplePairEncoder] O_i:", O_i.shape)
-        print("[ExamplePairEncoder] mask_I unique:", mask_I.unique())
-        print("[ExamplePairEncoder] mask_O unique:", mask_O.unique())
+        # print("\n[ExamplePairEncoder] I_i:", I_i.shape)
+        # print("[ExamplePairEncoder] O_i:", O_i.shape)
+        # print("[ExamplePairEncoder] mask_I unique:", mask_I.unique())
+        # print("[ExamplePairEncoder] mask_O unique:", mask_O.unique())
 
-        print("[ExamplePairEncoder] key_padded_mask shape:", mask.shape)
+        # print("[ExamplePairEncoder] key_padded_mask shape:", mask.shape)
 
         # Pass the VALIDITY mask directly to ViT
         # ViT will handle flattening + inversion internally
@@ -44,6 +44,6 @@ class ExamplePairEncoder(nn.Module):
         h_i = self.norm(h_i)
 
 
-        print("[ExamplePairEncoder] h_i mean/std:", h_i.mean().item(), h_i.std().item())
+        # print("[ExamplePairEncoder] h_i mean/std:", h_i.mean().item(), h_i.std().item())
 
         return h_i

@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
+from tqdm import tqdm
 
 from src.training.ppo_actor import PPOActor
 from src.training.ppo_value import PPOValuer
@@ -16,20 +17,21 @@ from src.architecture.adViT.critic import AdversarialVisionTransformer
 
 from src.data_pipeline.dataloader import ARCDataModule
 from src.inference.execution_controller import HybridExecuteController
+from src.training.metrics import ensure_dir, save_loss_plot, append_metrics_csv
 
 
 ############################################################
 #              ** PPO HYPERPARAMETERS **
 ############################################################
-PPO_EPOCHS = 4
-PPO_STEPS = 8          # PPO rollout length
+PPO_EPOCHS = 25
+PPO_STEPS = 10          # PPO rollout length
 PPO_GAMMA = 0.99       # reward discount
 PPO_LAMBDA = 0.95      # GAE lambda
 PPO_CLIP = 0.2
 PPO_LR = 1e-4
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-NUM_CLASSES = 10
+NUM_CLASSES = 11
 Z_DIM = 64
 NUM_PROPOSALS = 4
 
@@ -40,10 +42,10 @@ NUM_PROPOSALS = 4
 def build_generator_components():
     img_size = 30
     patch = 1
-    embed_dim = 128
+    embed_dim = 256
     heads = 4
     depth_vit = 6
-    mlp_dim = 256
+    mlp_dim = 512
 
     vit_pair = VisionTransformer(
         img_size=img_size,
@@ -81,8 +83,8 @@ def build_generator_components():
     executor = Executor(
         embed_dim=embed_dim,
         num_heads=heads,
-        mlp_dim=256,
-        depth=4,
+        mlp_dim=512,
+        depth=6,
         z_dim=Z_DIM,
         hidden_channels=64,
         num_classes=NUM_CLASSES
@@ -96,9 +98,9 @@ def build_critic():
     vit = VisionTransformer(
         img_size=30,
         patch_size=1,
-        embed_dim=128,
+        embed_dim=256,
         num_heads=4,
-        depth=6,
+        depth=4,
         mlp_dim=256,
         in_channels=2
     ).to(DEVICE)
@@ -107,7 +109,7 @@ def build_critic():
         vit_encoder=vit,
         z_dim=None,
         c_dim=None,
-        hidden_dim=256
+        mlp_dim=256
     ).to(DEVICE)
 
 
@@ -221,6 +223,15 @@ def ppo_rollout(controller, init_grid, init_mask, C, actor, valuer):
     values = torch.stack(values, dim=0)      # (T,B,P)
     rewards = torch.stack(rewards, dim=0)    # (T,B,P)
 
+    # Record mean reward for this rollout (T,B,P) -> scalar
+    try:
+        ensure_dir("checkpoints")
+        mean_reward = float(rewards.mean().item())
+        append_metrics_csv("checkpoints/phase4_ppo_rollouts.csv", {"mean_reward": mean_reward})
+    except Exception:
+        # Do not break rollout if metrics saving fails
+        pass
+
     return states, actions, logprobs, values, rewards
 
 
@@ -263,8 +274,8 @@ def train_phase4_ppo(data_loader):
     optimizer = torch.optim.Adam(list(actor.parameters()) + list(valuer.parameters()), lr=PPO_LR)
 
     # MAIN TRAIN LOOP
-    for epoch in range(PPO_EPOCHS):
-        print(f"\n==== PPO Epoch {epoch+1}/{PPO_EPOCHS} ====")
+    for epoch in tqdm(range(PPO_EPOCHS), "PPO Epoch:"):
+        # print(f"\n==== PPO Epoch {epoch+1}/{PPO_EPOCHS} ====")
 
         for batch_idx, batch in enumerate(data_loader):
             for k, v in batch.items():

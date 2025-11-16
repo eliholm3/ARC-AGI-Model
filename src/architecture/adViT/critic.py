@@ -9,7 +9,7 @@ class AdversarialVisionTransformer(nn.Module):
             vit_encoder: nn.Module,
             z_dim: int | None = None,   # proposal latent dim
             c_dim: int | None = None,   # context dim
-            hidden_dim: int = 256
+            mlp_dim: int = 256
     ):
         super().__init__()
         self.vit = vit_encoder
@@ -35,9 +35,9 @@ class AdversarialVisionTransformer(nn.Module):
         # === CRITIC HEAD ===
         self.mlp = nn.Sequential(
             nn.LayerNorm(in_dim),
-            nn.Linear(in_dim, hidden_dim),
+            nn.Linear(in_dim, mlp_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
+            nn.Linear(mlp_dim, 1)
         )
 
 

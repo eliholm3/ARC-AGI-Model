@@ -50,10 +50,10 @@ data_module = ARCDataModule(
 # ========================
 # LIMIT DATASET FOR DEBUG
 # ========================
-LIMIT_SAMPLES = 1    # or 2
+# LIMIT_SAMPLES = 1    # or 2
 
-if LIMIT_SAMPLES is not None:
-    data_module.dataset.data = data_module.dataset.data[:LIMIT_SAMPLES]
+# if LIMIT_SAMPLES is not None:
+#     data_module.dataset.data = data_module.dataset.data[:LIMIT_SAMPLES]
 
 arc_loader = data_module.get_loader()
 

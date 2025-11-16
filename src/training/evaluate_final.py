@@ -35,10 +35,10 @@ def build_generator():
     vit_gen = VisionTransformer(
         img_size=30,
         patch_size=1,
-        embed_dim=128,
-        num_heads=4,
-        depth=6,
-        mlp_dim=256,
+        embed_dim=256,
+        num_heads=6,
+        depth=4,
+        mlp_dim=512,
         in_channels=2
     ).to(DEVICE)
 
@@ -58,8 +58,8 @@ def build_generator():
     executor = Executor(
         embed_dim=vit_gen.c_token.size(-1),
         num_heads=4,
-        mlp_dim=256,
-        depth=4,
+        mlp_dim=512,
+        depth=6,
         z_dim=64,
         hidden_channels=64,
         num_classes=NUM_CLASSES
@@ -84,10 +84,10 @@ def build_critic():
     vit_critic = VisionTransformer(
         img_size=30,
         patch_size=1,
-        embed_dim=128,
+        embed_dim=256,
         num_heads=4,
-        depth=6,
-        mlp_dim=256,
+        depth=4,
+        mlp_dim=512,
         in_channels=1 + NUM_CLASSES
     ).to(DEVICE)
 
@@ -95,7 +95,7 @@ def build_critic():
         vit_encoder=vit_critic,
         z_dim=None,
         c_dim=None,
-        hidden_dim=256
+        mlp_dim=256
     ).to(DEVICE)
 
     return critic

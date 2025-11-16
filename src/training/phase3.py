@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import autograd
+from tqdm import tqdm
 
 from src.inference.generator import ARCGenerator
 
@@ -14,6 +15,7 @@ from src.architecture.LViTM.body import LargeVisionTransformerModel
 from src.architecture.executor.executor import Executor
 from src.architecture.adViT.critic import AdversarialVisionTransformer
 from src.data_pipeline.dataloader import ARCDataModule
+from src.training.metrics import ensure_dir, save_loss_plot, append_metrics_csv
 
 
 
@@ -21,7 +23,7 @@ from src.data_pipeline.dataloader import ARCDataModule
 #   Hyperparameters           #
 ###############################
 
-EPOCHS = 5
+EPOCHS = 100
 
 GEN_LR = 1e-4
 CRITIC_LR = 1e-4
@@ -56,10 +58,10 @@ def build_generator():
 
     img_size   = 30
     patch_size = 1
-    embed_dim  = 128
+    embed_dim  = 256
     num_heads  = 4
     depth_vit  = 6
-    mlp_dim    = 256
+    mlp_dim    = 512
     z_dim      = 64
     num_props  = 4
     NUM_CLASSES = 11  
@@ -103,8 +105,8 @@ def build_generator():
     executor = Executor(
         embed_dim=embed_dim,
         num_heads=4,
-        mlp_dim=256,
-        depth=4,
+        mlp_dim=512,
+        depth=6,
         z_dim=z_dim,
         hidden_channels=64,
         num_classes=NUM_CLASSES  
@@ -132,7 +134,7 @@ def build_critic():
 
     img_size   = 30
     patch_size = 1
-    embed_dim  = 128
+    embed_dim  = 256
     num_heads  = 4
     depth_vit  = 6
     mlp_dim    = 256
@@ -154,7 +156,7 @@ def build_critic():
         vit_encoder=vit_critic,
         z_dim=None,
         c_dim=None,
-        hidden_dim=256
+        mlp_dim=256
     ).to(DEVICE)
 
     return critic
@@ -252,8 +254,12 @@ def train_phase3_adversarial(
     gen_opt = torch.optim.Adam(generator.parameters(), lr=GEN_LR)
     critic_opt = torch.optim.Adam(critic.parameters(), lr=CRITIC_LR)
 
-    for epoch in range(EPOCHS):
-        print(f"\n=== Phase 3 Epoch {epoch + 1}/{EPOCHS} ===")
+    ensure_dir("checkpoints")
+    gen_losses = []
+    critic_losses = []
+
+    for epoch in tqdm(range(EPOCHS), "WGAN-GP Phase Epoch:"):
+        # print(f"\n=== Phase 3 Epoch {epoch + 1}/{EPOCHS} ===")
         total_gen_loss = 0.0
         total_critic_loss = 0.0
         n_gen_steps = 0
@@ -357,12 +363,12 @@ def train_phase3_adversarial(
 
                 critic_loss.backward()
 
-                for name, p in critic.named_parameters():
-                    if p.grad is not None:
-                        if torch.isnan(p.grad).any():
-                            print(f"[PHASE3 CRITIC NaN GRAD] {name}")
-                        if torch.all(p.grad == 0):
-                            print(f"[PHASE3 CRITIC ZERO GRAD] {name}")
+                # for name, p in critic.named_parameters():
+                #     if p.grad is not None:
+                #         if torch.isnan(p.grad).any():
+                #             print(f"[PHASE3 CRITIC NaN GRAD] {name}")
+                #         if torch.all(p.grad == 0):
+                #             print(f"[PHASE3 CRITIC ZERO GRAD] {name}")
 
                 critic_opt.step()
 
@@ -421,12 +427,12 @@ def train_phase3_adversarial(
 
             gen_loss.backward()
 
-            for name, p in generator.named_parameters():
-                if p.grad is not None:
-                    if torch.isnan(p.grad).any():
-                        print(f"[PHASE3 GEN NaN GRAD] {name}")
-                    if torch.all(p.grad == 0):
-                        print(f"[PHASE3 GEN ZERO GRAD] {name}")
+            # for name, p in generator.named_parameters():
+            #     if p.grad is not None:
+            #         if torch.isnan(p.grad).any():
+            #             print(f"[PHASE3 GEN NaN GRAD] {name}")
+            #         if torch.all(p.grad == 0):
+            #             print(f"[PHASE3 GEN ZERO GRAD] {name}")
 
             gen_opt.step()
 
@@ -438,6 +444,15 @@ def train_phase3_adversarial(
         avg_critic = total_critic_loss / max(n_critic_steps, 1)
 
         print(f"Epoch {epoch + 1}: Gen Loss = {avg_gen:.4f}, Critic Loss = {avg_critic:.4f}")
+
+        gen_losses.append(avg_gen)
+        critic_losses.append(avg_critic)
+        try:
+            # Combined plot: generator vs critic
+            save_loss_plot(gen_losses, critic_losses, out_path="checkpoints/phase3_gen_vs_crit.png")
+            append_metrics_csv("checkpoints/phase3_metrics.csv", {"epoch": epoch + 1, "gen_loss": avg_gen, "critic_loss": avg_critic})
+        except Exception as e:
+            print(f"[phase3] Warning: failed to save metrics: {e}")
 
     return generator, critic
 

@@ -1,7 +1,9 @@
 import torch
 from torch import autograd
+from tqdm import tqdm
 
 from src.training.utils_debug import report_param_stats
+from src.training.metrics import ensure_dir, save_loss_plot, append_metrics_csv
 
 from src.architecture.ViT.body import VisionTransformer
 from src.architecture.adViT.critic import AdversarialVisionTransformer
@@ -13,9 +15,9 @@ from src.data_pipeline.dataloader import ARCDataModule
 ###############################
 
 CRITIC_LR = 1e-4
-CRITIC_EPOCHS = 5
+CRITIC_EPOCHS = 50
 LAMBDA_GP = 10.0
-NUM_CLASSES = 10  # ARC colors
+NUM_CLASSES = 11  # ARC colors
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -29,7 +31,7 @@ def build_critic():
 
     img_size   = 30
     patch_size = 1
-    embed_dim  = 128
+    embed_dim  = 256
     num_heads  = 4
     depth_vit  = 6
     mlp_dim    = 256
@@ -51,7 +53,7 @@ def build_critic():
         vit_encoder=vit_critic,
         z_dim=None,
         c_dim=None,
-        hidden_dim=256
+        mlp_dim=256
     ).to(DEVICE)
 
     return critic
@@ -147,12 +149,14 @@ def train_critic_phase2(critic, data_loader):
 
     critic.train()
     optimizer = torch.optim.Adam(critic.parameters(), lr=CRITIC_LR)
+    ensure_dir("checkpoints")
+    critic_losses = []
 
-    for epoch in range(CRITIC_EPOCHS):
+    for epoch in tqdm(range(CRITIC_EPOCHS), "Critic Warmup Epoch:"):
         total_loss = 0.0
         total_batches = 0
 
-        print(f"\n=== Critic Warmup Epoch {epoch + 1}/{CRITIC_EPOCHS} ===")
+        # print(f"\n=== Critic Warmup Epoch {epoch + 1}/{CRITIC_EPOCHS} ===")
 
         for batch in data_loader:
 
@@ -239,14 +243,14 @@ def train_critic_phase2(critic, data_loader):
             ###################################
             #   DEBUG: Check Critic Gradients
             ###################################
-            for name, p in critic.named_parameters():
-                if p.grad is None:
-                    print(f"[PHASE2 WARNING] No grad for {name}")
-                else:
-                    if torch.isnan(p.grad).any():
-                        print(f"[PHASE2 ERROR] NaN gradient detected in {name}")
-                    if torch.all(p.grad == 0):
-                        print(f"[PHASE2 WARNING] ZERO gradient in {name}")
+            # for name, p in critic.named_parameters():
+            #     if p.grad is None:
+            #         print(f"[PHASE2 WARNING] No grad for {name}")
+            #     else:
+            #         if torch.isnan(p.grad).any():
+            #             print(f"[PHASE2 ERROR] NaN gradient detected in {name}")
+            #         if torch.all(p.grad == 0):
+            #             print(f"[PHASE2 WARNING] ZERO gradient in {name}")
 
             # Optional (expensive): print weight + grad stats
             # report_param_stats(critic, name="Phase2 Critic", max_layers=12)
@@ -259,6 +263,12 @@ def train_critic_phase2(critic, data_loader):
 
         avg_loss = total_loss / max(total_batches, 1)
         print(f"Epoch {epoch + 1}: Critic Warmup Loss = {avg_loss:.4f}")
+        critic_losses.append(avg_loss)
+        try:
+            save_loss_plot(critic_losses, None, out_path="checkpoints/phase2_critic_loss.png")
+            append_metrics_csv("checkpoints/phase2_metrics.csv", {"epoch": epoch + 1, "critic_loss": avg_loss})
+        except Exception as e:
+            print(f"[phase2] Warning: failed to save critic metrics: {e}")
 
     return critic
 

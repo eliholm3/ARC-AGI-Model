@@ -68,11 +68,11 @@ class ARCGenerator(nn.Module):
         train_output_masks = train_output_masks.bool()
         test_input_masks = test_input_masks.bool()
 
-        if DEBUGGING:  # toggle debug
-            print("\n[ARCGenerator] train_inputs:", train_inputs.shape)
-            print("[ARCGenerator] test_inputs:", test_inputs.shape)
-            print("[ARCGenerator] train_input_masks:", train_input_masks.shape)
-            print("[ARCGenerator] test_input_masks:", test_input_masks.shape)
+        # if DEBUGGING:  # toggle debug
+        #     print("\n[ARCGenerator] train_inputs:", train_inputs.shape)
+        #     print("[ARCGenerator] test_inputs:", test_inputs.shape)
+        #     print("[ARCGenerator] train_input_masks:", train_input_masks.shape)
+        #     print("[ARCGenerator] test_input_masks:", test_input_masks.shape)
 
 
         #########################################
@@ -111,8 +111,8 @@ class ARCGenerator(nn.Module):
         # Single context vector per sample, shared by all test pairs.
         C = self.aggregator(h, mask=pair_mask)  # (B, D)
 
-        if DEBUGGING:
-            print("[ARCGenerator] C mean/std:", C.mean().item(), C.std().item())
+        # if DEBUGGING:
+        #     print("[ARCGenerator] C mean/std:", C.mean().item(), C.std().item())
 
 
         # ----------------------------------
@@ -180,8 +180,8 @@ class ARCGenerator(nn.Module):
         # z_chosen: (B, K_test, z_dim)
         z_chosen = torch.stack(all_z_chosen, dim=1)
 
-        if DEBUGGING:
-            print("[ARCGenerator] logits mean/std:", logits.mean().item(), logits.std().item())
+        # if DEBUGGING:
+        #     print("[ARCGenerator] logits mean/std:", logits.mean().item(), logits.std().item())
 
 
         return {

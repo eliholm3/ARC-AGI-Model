@@ -70,9 +70,9 @@ class ConditionalTestInputEncoder(nn.Module):
         tokens = self.vit.pos_encoding(tokens)
         tokens = self.vit.dropout(tokens)
 
-        print("\n[CondEncoder] tokens shape:", tokens.shape)
-        if key_padding_mask is not None:
-            print("[CondEncoder] key_padding_mask shape:", key_padding_mask.shape)
+        # print("\n[CondEncoder] tokens shape:", tokens.shape)
+        # if key_padding_mask is not None:
+        #     print("[CondEncoder] key_padding_mask shape:", key_padding_mask.shape)
 
 
         return tokens, key_padding_mask

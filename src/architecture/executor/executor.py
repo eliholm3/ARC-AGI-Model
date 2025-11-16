@@ -141,6 +141,6 @@ class Executor(nn.Module):
         # Compute on the embedding dimension
         logits = self.discretizer(x_feats)  # (B, num_classes, H, W)
 
-        print("\n[Executor] logits mean/std:", logits.mean().item(), logits.std().item())
+        # print("\n[Executor] logits mean/std:", logits.mean().item(), logits.std().item())
 
         return logits
