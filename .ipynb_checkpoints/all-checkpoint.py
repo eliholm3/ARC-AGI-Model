@@ -3238,7 +3238,7 @@ def build_critic():
         vit_encoder=vit_critic,
         z_dim=None,
         c_dim=None,
-        mlp_dim=256
+        hidden_dim=256
     ).to(DEVICE)
 
     return critic
@@ -3616,7 +3616,7 @@ def build_critic():
         vit_encoder=vit_critic,
         z_dim=None,
         c_dim=None,
-        mlp_dim=256
+        hidden_dim=256
     ).to(DEVICE)
 
     return critic
@@ -4031,7 +4031,7 @@ def build_critic():
         vit_encoder=vit,
         z_dim=None,
         c_dim=None,
-        mlp_dim=256
+        hidden_dim=256
     ).to(DEVICE)
 
 
