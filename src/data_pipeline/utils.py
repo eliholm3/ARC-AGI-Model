@@ -1,5 +1,7 @@
+# src/data_pipeline/utils.py
 import json
 from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
 import torch
 
@@ -36,35 +38,44 @@ def load_jsons_from_folder(dir_path):
 # ----------------------------
 # Preprocess helpers
 # ----------------------------
-def _add_one_to_all_values_in_place(data):
+def _add_one_to_all_values_in_place(data: Dict[str, Any]):
     """
     Adds +1 to every scalar value in each input/output grid across all samples.
     Done BEFORE padding so pad_value=0 remains 0.
+
+    Robust to test examples that do not include "output".
     """
     for sample in data.values():
         for split in ["train", "test"]:
             for pairs in sample.get(split, []):
-                # input grid
-                r = 0
-                while r < len(pairs["input"]):
-                    c = 0
-                    row = pairs["input"][r]
-                    while c < len(row):
-                        row[c] = row[c] + 1
-                        c += 1
-                    r += 1
-                # output grid
-                r = 0
-                while r < len(pairs["output"]):
-                    c = 0
-                    row = pairs["output"][r]
-                    while c < len(row):
-                        row[c] = row[c] + 1
-                        c += 1
-                    r += 1
+                # input grid (+1)
+                if "input" in pairs and isinstance(pairs["input"], list):
+                    r = 0
+                    while r < len(pairs["input"]):
+                        row = pairs["input"][r]
+                        if isinstance(row, list):
+                            c = 0
+                            while c < len(row):
+                                if isinstance(row[c], int):
+                                    row[c] = row[c] + 1
+                                c += 1
+                        r += 1
+
+                # output grid (+1) — only if present
+                if "output" in pairs and isinstance(pairs["output"], list):
+                    r = 0
+                    while r < len(pairs["output"]):
+                        row = pairs["output"][r]
+                        if isinstance(row, list):
+                            c = 0
+                            while c < len(row):
+                                if isinstance(row[c], int):
+                                    row[c] = row[c] + 1
+                                c += 1
+                        r += 1
 
 
-def get_metrics(data):
+def get_metrics(data: Dict[str, Any]):
     metric_dict = {
         "max_train_len": 0,
         "max_test_len": 0,
@@ -79,43 +90,73 @@ def get_metrics(data):
     }
 
     for sample in data.values():
-        if (len(sample['train']) > metric_dict['max_train_len']):
+        if len(sample.get('train', [])) > metric_dict['max_train_len']:
             metric_dict['max_train_len'] = len(sample['train'])
-        if (len(sample['test']) > metric_dict['max_test_len']):
+        if len(sample.get('test', [])) > metric_dict['max_test_len']:
             metric_dict['max_test_len'] = len(sample['test'])
-        for pairs in sample['train']:
-            if (len(pairs['input']) > metric_dict['max_train_input_height']):
+
+        for pairs in sample.get('train', []):
+            # input dims
+            if len(pairs.get('input', [])) > metric_dict['max_train_input_height']:
                 metric_dict['max_train_input_height'] = len(pairs['input'])
-            if (len(pairs['output']) > metric_dict['max_train_output_height']):
-                metric_dict['max_train_output_height'] = len(pairs['output'])
-            for inp in pairs['input']:
-                if (len(inp) > metric_dict['max_train_input_width']):
+            for inp in pairs.get('input', []):
+                if len(inp) > metric_dict['max_train_input_width']:
                     metric_dict['max_train_input_width'] = len(inp)
-            for output in pairs['output']:
-                if (len(output) > metric_dict['max_train_output_width']):
+
+            # output dims (train always expected to exist, but guard anyway)
+            if len(pairs.get('output', [])) > metric_dict['max_train_output_height']:
+                metric_dict['max_train_output_height'] = len(pairs.get('output', []))
+            for output in pairs.get('output', []):
+                if len(output) > metric_dict['max_train_output_width']:
                     metric_dict['max_train_output_width'] = len(output)
-        for pairs in sample['test']:
-            if (len(pairs['input']) > metric_dict['max_test_input_height']):
+
+        for pairs in sample.get('test', []):
+            # input dims
+            if len(pairs.get('input', [])) > metric_dict['max_test_input_height']:
                 metric_dict['max_test_input_height'] = len(pairs['input'])
-            if (len(pairs['output']) > metric_dict['max_test_output_height']):
-                metric_dict['max_test_output_height'] = len(pairs['output'])
-            for inp in pairs['input']:
-                if (len(inp) > metric_dict['max_test_input_width']):
+            for inp in pairs.get('input', []):
+                if len(inp) > metric_dict['max_test_input_width']:
                     metric_dict['max_test_input_width'] = len(inp)
-            for output in pairs['output']:
-                if (len(output) > metric_dict['max_test_output_width']):
+
+            # output dims (may be missing)
+            if len(pairs.get('output', [])) > metric_dict['max_test_output_height']:
+                metric_dict['max_test_output_height'] = len(pairs.get('output', []))
+            for output in pairs.get('output', []):
+                if len(output) > metric_dict['max_test_output_width']:
                     metric_dict['max_test_output_width'] = len(output)
+
     return metric_dict
 
 
-def pad_data(data, metric_dict=None, pad_value=0):
-    """
-    Pads each sample so that *both* train and test grids
-    share the same square size per sample.
+def _make_zero_grid_like(grid: List[List[int]], pad_value: int = 0) -> List[List[int]]:
+    """Create a new grid the same shape as `grid`, filled with pad_value."""
+    out: List[List[int]] = []
+    r = 0
+    while r < len(grid):
+        row = grid[r]
+        width = len(row) if isinstance(row, list) else 0
+        out.append([pad_value] * width)
+        r += 1
+    return out
 
-    metric_dict is ignored (kept for backward compatibility).
+
+def pad_data(data: Dict[str, Any], metric_dict=None, pad_value: int = 0):
+    """
+    Pads each sample so that *both* train and test grids share the same square size per sample.
+
+    Also ensures every test pair has an "output":
+    - If missing, we GUESS the output size = input size and create a placeholder
+      filled with pad_value, marking pairs["_guessed_output"] = True.
     """
     for sample in data.values():
+        # Ensure every test pair has "output" (create placeholder if absent)
+        for pairs in sample.get('test', []):
+            if "output" not in pairs or not isinstance(pairs["output"], list):
+                # Guess size from input grid
+                guessed = _make_zero_grid_like(pairs.get("input", []), pad_value=pad_value)
+                pairs["output"] = guessed
+                pairs["_guessed_output"] = True  # flag for downstream logic
+
         # -----------------------------------
         # 1. Compute per-sample global maxima
         #    across BOTH train and test
@@ -125,35 +166,35 @@ def pad_data(data, metric_dict=None, pad_value=0):
         max_output_height = 0
         max_output_width  = 0
 
-        # Look at TRAIN split
+        # TRAIN
         for pairs in sample.get('train', []):
             # input
-            if len(pairs['input']) > max_input_height:
+            if len(pairs.get('input', [])) > max_input_height:
                 max_input_height = len(pairs['input'])
-            for row in pairs['input']:
+            for row in pairs.get('input', []):
                 if len(row) > max_input_width:
                     max_input_width = len(row)
 
             # output
-            if len(pairs['output']) > max_output_height:
+            if len(pairs.get('output', [])) > max_output_height:
                 max_output_height = len(pairs['output'])
-            for row in pairs['output']:
+            for row in pairs.get('output', []):
                 if len(row) > max_output_width:
                     max_output_width = len(row)
 
-        # Look at TEST split
+        # TEST
         for pairs in sample.get('test', []):
             # input
-            if len(pairs['input']) > max_input_height:
+            if len(pairs.get('input', [])) > max_input_height:
                 max_input_height = len(pairs['input'])
-            for row in pairs['input']:
+            for row in pairs.get('input', []):
                 if len(row) > max_input_width:
                     max_input_width = len(row)
 
-            # output
-            if len(pairs['output']) > max_output_height:
+            # output (guessed outputs already ensured)
+            if len(pairs.get('output', [])) > max_output_height:
                 max_output_height = len(pairs['output'])
-            for row in pairs['output']:
+            for row in pairs.get('output', []):
                 if len(row) > max_output_width:
                     max_output_width = len(row)
 
@@ -170,13 +211,15 @@ def pad_data(data, metric_dict=None, pad_value=0):
         # -----------------------------------
         for pairs in sample.get('train', []):
             # input
-            while len(pairs['input']) < max_size:
+            while len(pairs.get('input', [])) < max_size:
                 pairs['input'].append([pad_value] * max_size)
-            for row in pairs['input']:
+            for row in pairs.get('input', []):
                 while len(row) < max_size:
                     row.append(pad_value)
 
             # output
+            if "output" not in pairs or not isinstance(pairs["output"], list):
+                pairs["output"] = _make_zero_grid_like(pairs.get("input", []), pad_value)
             while len(pairs['output']) < max_size:
                 pairs['output'].append([pad_value] * max_size)
             for row in pairs['output']:
@@ -188,13 +231,13 @@ def pad_data(data, metric_dict=None, pad_value=0):
         # -----------------------------------
         for pairs in sample.get('test', []):
             # input
-            while len(pairs['input']) < max_size:
+            while len(pairs.get('input', [])) < max_size:
                 pairs['input'].append([pad_value] * max_size)
-            for row in pairs['input']:
+            for row in pairs.get('input', []):
                 while len(row) < max_size:
                     row.append(pad_value)
 
-            # output
+            # output (present by construction above)
             while len(pairs['output']) < max_size:
                 pairs['output'].append([pad_value] * max_size)
             for row in pairs['output']:
@@ -204,89 +247,7 @@ def pad_data(data, metric_dict=None, pad_value=0):
     return data
 
 
-
-# def pad_data(data, metric_dict=None, pad_value=0):
-    # """
-    # Pads each sample independently to its own max square size.
-    # metric_dict is ignored (kept for backward compatibility).
-    # """
-    # for sample in data.values():
-    #     # ----- compute per-sample maxima for TRAIN -----
-    #     max_train_input_height = 0
-    #     max_train_input_width  = 0
-    #     max_train_output_height = 0
-    #     max_train_output_width  = 0
-
-    #     for pairs in sample.get('train', []):
-    #         if len(pairs['input'])  > max_train_input_height:  max_train_input_height  = len(pairs['input'])
-    #         if len(pairs['output']) > max_train_output_height: max_train_output_height = len(pairs['output'])
-    #         for inp in pairs['input']:
-    #             if len(inp) > max_train_input_width:  max_train_input_width  = len(inp)
-    #         for outp in pairs['output']:
-    #             if len(outp) > max_train_output_width: max_train_output_width = len(outp)
-
-    #     # ----- compute per-sample maxima for TEST -----
-    #     max_test_input_height = 0
-    #     max_test_input_width  = 0
-    #     max_test_output_height = 0
-    #     max_test_output_width  = 0
-
-    #     for pairs in sample.get('test', []):
-    #         if len(pairs['input'])  > max_test_input_height:  max_test_input_height  = len(pairs['input'])
-    #         if len(pairs['output']) > max_test_output_height: max_test_output_height = len(pairs['output'])
-    #         for inp in pairs['input']:
-    #             if len(inp) > max_test_input_width:  max_test_input_width  = len(inp)
-    #         for outp in pairs['output']:
-    #             if len(outp) > max_test_output_width: max_test_output_width = len(outp)
-
-    #     # ----- per-sample square sizes -----
-    #     max_train_size = max(
-    #         max_train_input_height,
-    #         max_train_input_width,
-    #         max_train_output_height,
-    #         max_train_output_width
-    #     )
-    #     max_test_size = max(
-    #         max_test_input_height,
-    #         max_test_input_width,
-    #         max_test_output_height,
-    #         max_test_output_width
-    #     )
-
-    #     # ----- pad TRAIN for this sample -----
-    #     for pairs in sample.get('train', []):
-    #         # input
-    #         while len(pairs['input']) < max_train_size:
-    #             pairs['input'].append([pad_value] * max_train_size)
-    #         for inp in pairs['input']:
-    #             while len(inp) < max_train_size:
-    #                 inp.append(pad_value)
-    #         # output
-    #         while len(pairs['output']) < max_train_size:
-    #             pairs['output'].append([pad_value] * max_train_size)
-    #         for outp in pairs['output']:
-    #             while len(outp) < max_train_size:
-    #                 outp.append(pad_value)
-
-    #     # ----- pad TEST for this sample -----
-    #     for pairs in sample.get('test', []):
-    #         # input
-    #         while len(pairs['input']) < max_test_size:
-    #             pairs['input'].append([pad_value] * max_test_size)
-    #         for inp in pairs['input']:
-    #             while len(inp) < max_test_size:
-    #                 inp.append(pad_value)
-    #         # output
-    #         while len(pairs['output']) < max_test_size:
-    #             pairs['output'].append([pad_value] * max_test_size)
-    #         for outp in pairs['output']:
-    #             while len(outp) < max_test_size:
-    #                 outp.append(pad_value)
-
-    # return data
-
-
-def _infer_original_size_from_padded(grid, pad_value=0):
+def _infer_original_size_from_padded(grid: List[List[int]], pad_value=0) -> Tuple[int, int]:
     h = 0
     w = 0
     r = 0
@@ -309,10 +270,13 @@ def _infer_original_size_from_padded(grid, pad_value=0):
     return (h, w)
 
 
-def build_sample_level_dataset(data, pad_value=0):
+def build_sample_level_dataset(data: Dict[str, Any], pad_value: int = 0):
     """
     Build a list of per-sample records.
     NEW: also stores per-pair masks: 1 where value != pad_value, else 0.
+    If a test pair had no output originally, we:
+      - used a guessed output grid sized like the input during pad_data
+      - set output_mask to ALL ZEROS here (so downstream code can ignore scoring if desired)
     """
     dataset = []
     for sample_name, sample in data.items():
@@ -327,17 +291,16 @@ def build_sample_level_dataset(data, pad_value=0):
         test_max_w = 0
 
         # ----- TRAIN -----
-        idx = 0
-        for pairs in sample['train']:
-            inp_grid = pairs['input']
-            out_grid = pairs['output']
+        for pairs in sample.get('train', []):
+            inp_grid = pairs.get('input', [])
+            out_grid = pairs.get('output', [])
 
             # original sizes (prefer stored, else infer)
-            if ('orig_input_size' in pairs):
+            if 'orig_input_size' in pairs:
                 in_h, in_w = pairs['orig_input_size']
             else:
                 in_h, in_w = _infer_original_size_from_padded(inp_grid, pad_value)
-            if ('orig_output_size' in pairs):
+            if 'orig_output_size' in pairs:
                 out_h, out_w = pairs['orig_output_size']
             else:
                 out_h, out_w = _infer_original_size_from_padded(out_grid, pad_value)
@@ -352,30 +315,29 @@ def build_sample_level_dataset(data, pad_value=0):
             inp_tensor = torch.tensor(inp_grid).long()
             out_tensor = torch.tensor(out_grid).long()
 
-            # NEW: masks (1 for non-pad, 0 for pad)
+            # masks (1 for non-pad, 0 for pad)
             inp_mask = (inp_tensor != pad_value).long()
             out_mask = (out_tensor != pad_value).long()
 
-            # store pair
             train_pairs.append({
                 "input": inp_tensor,
                 "output": out_tensor,
                 "input_mask": inp_mask,
                 "output_mask": out_mask
             })
-            idx += 1
 
         # ----- TEST -----
-        idx = 0
-        for pairs in sample['test']:
-            inp_grid = pairs['input']
-            out_grid = pairs['output']
+        for pairs in sample.get('test', []):
+            inp_grid = pairs.get('input', [])
+            out_grid = pairs.get('output', [])
 
-            if ('orig_input_size' in pairs):
+            # original sizes
+            if 'orig_input_size' in pairs:
                 in_h, in_w = pairs['orig_input_size']
             else:
                 in_h, in_w = _infer_original_size_from_padded(inp_grid, pad_value)
-            if ('orig_output_size' in pairs):
+
+            if 'orig_output_size' in pairs:
                 out_h, out_w = pairs['orig_output_size']
             else:
                 out_h, out_w = _infer_original_size_from_padded(out_grid, pad_value)
@@ -388,17 +350,22 @@ def build_sample_level_dataset(data, pad_value=0):
             inp_tensor = torch.tensor(inp_grid).long()
             out_tensor = torch.tensor(out_grid).long()
 
-            # NEW: masks (1 for non-pad, 0 for pad)
+            # masks
             inp_mask = (inp_tensor != pad_value).long()
-            out_mask = (out_tensor != pad_value).long()
+
+            # If output was guessed, set output_mask to all zeros (so it won't be scored).
+            if pairs.get("_guessed_output", False):
+                out_mask = torch.zeros_like(out_tensor).long()
+            else:
+                out_mask = (out_tensor != pad_value).long()
 
             test_pairs.append({
                 "input": inp_tensor,
                 "output": out_tensor,
                 "input_mask": inp_mask,
-                "output_mask": out_mask
+                "output_mask": out_mask,
+                "guessed_output": 1 if pairs.get("_guessed_output", False) else 0,
             })
-            idx += 1
 
         # assemble sample-level record
         item = {
@@ -411,6 +378,7 @@ def build_sample_level_dataset(data, pad_value=0):
         dataset.append(item)
 
     return dataset
+
 
 def arc_collate_fn_bs1(batch):
     # batch size is guaranteed to be 1; return the single dict unchanged

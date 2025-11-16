@@ -2581,7 +2581,7 @@ def build_generator():
         img_size=30,
         patch_size=1,
         embed_dim=256,
-        num_heads=6,
+        num_heads=4,
         depth=4,
         mlp_dim=512,
         in_channels=2

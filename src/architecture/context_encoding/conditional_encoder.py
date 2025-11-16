@@ -34,6 +34,14 @@ class ConditionalTestInputEncoder(nn.Module):
         ######################
         #   Encode with ViT  #
         ######################
+        # If model expects 2 channels but input is 1, duplicate the channel.
+        if I_test.dim() == 4 and I_test.size(1) == 1:
+            try:
+                expected_in = self.vit.patch_embedding.proj.weight.size(1)
+            except Exception:
+                expected_in = None
+            if expected_in == 2:
+                I_test = I_test.repeat(1, 2, 1, 1)
 
         tokens = self.vit.patch_embedding(I_test)  # (B, S, D)
 
