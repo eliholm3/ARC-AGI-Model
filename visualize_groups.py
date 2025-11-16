@@ -1,11 +1,27 @@
-## Use the following command to create visualization of a directory full of tasks
-# python visualize_groups.py \
-#  --task_dir Curve-BallDatasetTasks \
-#  --out_dir Curve-BallDatasetTasks_Images
 
-## Use the following command to create visualization of a single task 
-## and update the TASK_FILE and OUT_DIR variables in the script
-# python visualize_groups.py
+## PLEASE READ THE COMMENTS BELOW TO UNDERSTAND HOW TO USE THIS SCRIPT
+
+## Example: visualize a directory of ARC-style task JSONs (optionally with predictions)
+## change to index_base 0 if your data is 0-indexed
+## task_dir should be a directory of ARC-style task JSONs
+## pred_dir should be a directory of prediction JSONs
+## out_dir should be a directory to save the images
+# python visualize_groups.py \
+#   --task_dir Curve-BallDatasetTasks \
+#   --out_dir Curve-BallDatasetTasks_Images \
+#   --index_base 1 \
+#   --pred_dir Curve-BallDatasetTasks_Preds
+
+## Example: visualize a single ARC-style task JSON (optionally with predictions)
+## change to index_base 0 if your data is 0-indexed
+## task_file should be a path to an ARC-style task JSON
+## pred_file should be a path to a prediction JSON
+## out_dir should be a directory to save the images
+# python visualize_groups.py \
+#   --task_file Curve-BallDatasetTasks/example06.json \
+#   --out_dir Curve-BallDatasetTasks_Images \
+#   --index_base 1 \
+#   --pred_file Curve-BallDatasetTasks_Preds/example06.json
 
 
 from __future__ import annotations
@@ -39,6 +55,10 @@ def _hex_to_rgb(h: str) -> Tuple[int,int,int]:
     h = h.lstrip("#"); return tuple(int(h[i:i+2],16) for i in (0,2,4))
 PALETTE_RGB = np.array([_hex_to_rgb(h) for h in ARC_COLORS], dtype=np.uint8)
 
+# Index base for grids: 0 (values 0..9) or 1 (values 1..10).
+# This is configured via the --index_base CLI flag in main().
+INDEX_BASE = 1
+
 # -------- helpers: grids & validation --------
 def _is_grid(x: Any) -> bool:
     return (
@@ -53,12 +73,19 @@ def _validate_grid(g: List[List[int]], name="grid"):
         raise ValueError(f"{name} must be a non-empty rectangular 2D list of ints.")
     for y, row in enumerate(g):
         for x, v in enumerate(row):
-            # Allow either 0-based or 1-based ARC color indices, but clamp to the
-            # palette size. We detect the convention in _grid_to_image.
-            if not (0 <= int(v) <= len(ARC_COLORS)):
-                raise ValueError(
-                    f"{name}[{y}][{x}]={v} not in [0..{len(ARC_COLORS)}]."
-                )
+            v_int = int(v)
+            if INDEX_BASE == 0:
+                # 0-based: allowed range 0..len(ARC_COLORS)-1
+                if not (0 <= v_int <= len(ARC_COLORS) - 1):
+                    raise ValueError(
+                        f"{name}[{y}][{x}]={v} not in [0..{len(ARC_COLORS)-1}] for 0-based palette."
+                    )
+            else:
+                # 1-based: allowed range 1..len(ARC_COLORS)
+                if not (1 <= v_int <= len(ARC_COLORS)):
+                    raise ValueError(
+                        f"{name}[{y}][{x}]={v} not in [1..{len(ARC_COLORS)}] for 1-based palette."
+                    )
 
 def _normalize_grid(g: List[List[int]]) -> List[List[int]]:
     """Pad ragged rows (shouldn't happen if validated) and return a copy."""
@@ -97,23 +124,12 @@ def _load_groups(path: Path) -> Dict[str, List[List[List[int]]]]:
 # -------- rasterization --------
 def _grid_to_image(grid: List[List[int]], cell=CELL_SIZE, draw_grid=True) -> Image.Image:
     _validate_grid(grid)
-    arr = np.array(grid, dtype=np.int16)          # HxW, values in [0..len(ARC_COLORS)]
+    arr = np.array(grid, dtype=np.int16)          # HxW
 
-    # Auto-detect convention:
-    # - If there is at least one 0, treat as 0-based (valid range 0..len-1).
-    # - Otherwise, treat as 1-based (valid range 1..len), and subtract 1.
-    has_zero = (arr == 0).any()
-    if has_zero:
-        if arr.max() > len(PALETTE_RGB) - 1:
-            raise ValueError(
-                f"Grid uses 0-based colors but has value > {len(PALETTE_RGB)-1}."
-            )
+    # Convert to 0-based palette indices based on INDEX_BASE.
+    if INDEX_BASE == 0:
         idx = arr
     else:
-        if arr.min() < 1 or arr.max() > len(PALETTE_RGB):
-            raise ValueError(
-                f"Grid uses 1-based colors but has value outside [1..{len(PALETTE_RGB)}]."
-            )
         idx = arr - 1
 
     rgb = PALETTE_RGB[idx]                        # HxWx3
@@ -138,6 +154,61 @@ def _label_above(img: Image.Image, text: str) -> Image.Image:
     out.paste(strip, (0,0))
     out.paste(img, (0, LABEL_H))
     return out
+
+def _placeholder_box(base: Image.Image, text: str) -> Image.Image:
+    w, h = base.size
+    img = Image.new("RGB", (w, h), BG_COLOR)
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", size=min(h - 4, LABEL_H - 4))
+    except Exception:
+        font = ImageFont.load_default()
+    tw = draw.textlength(text, font=font)
+    th = getattr(font, "size", 12)
+    x = max(2, (w - tw) // 2)
+    y = max(2, (h - th) // 2)
+    draw.rectangle((1, 1, w - 2, h - 2), outline=GRID_COLOR, width=2)
+    draw.text((x, y), text, fill=(0, 0, 0), font=font)
+    return img
+
+def _io_pred_panel(
+    input_grid: List[List[int]],
+    output_grid: List[List[int]] | None,
+    pred_grid: List[List[int]] | None,
+    label_input: str,
+    label_output: str | None,
+    label_pred: str,
+) -> Image.Image:
+    in_img = _grid_to_image(_normalize_grid(input_grid))
+    in_col = _label_above(in_img, label_input)
+
+    if output_grid is not None:
+        out_img = _grid_to_image(_normalize_grid(output_grid))
+    else:
+        out_img = _placeholder_box(in_img, "no ground truth")
+    out_col = _label_above(out_img, label_output or "Output")
+
+    if pred_grid is not None:
+        pred_img = _grid_to_image(_normalize_grid(pred_grid))
+    else:
+        pred_img = _placeholder_box(out_img, "prediction not included")
+    pred_col = _label_above(pred_img, label_pred)
+
+    h = max(in_col.height, out_col.height, pred_col.height)
+    w = in_col.width + COL_GAP + out_col.width + COL_GAP + pred_col.width
+    canvas = Image.new("RGB", (w, h), BG_COLOR)
+
+    y_in = (h - in_col.height) // 2
+    y_out = (h - out_col.height) // 2
+    y_pred = (h - pred_col.height) // 2
+
+    x0 = 0
+    canvas.paste(in_col, (x0, y_in))
+    x1 = x0 + in_col.width + COL_GAP
+    canvas.paste(out_col, (x1, y_out))
+    x2 = x1 + out_col.width + COL_GAP
+    canvas.paste(pred_col, (x2, y_pred))
+    return canvas
 
 def _two_panel(input_grid: List[List[int]], output_grid: List[List[int]] | None, left_label: str, right_label: str | None = None) -> Image.Image:
     """Build a side-by-side panel for a single example.
@@ -216,7 +287,43 @@ def _write_png(img: Image.Image, path: Path) -> str:
     return path.as_posix()
 
 
-def _visualize_arc_task(task_path: Path, out_root: Path) -> str:
+def _label_with_filename(img: Image.Image, filename: str) -> Image.Image:
+    """Add a filename strip at the top-left of the full image."""
+    strip = Image.new("RGB", (img.width, LABEL_H), BG_COLOR)
+    draw  = ImageDraw.Draw(strip)
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", size=LABEL_H-10)
+    except Exception:
+        font = ImageFont.load_default()
+
+    # Left-aligned filename text
+    tx = 4
+    ty = max(2, (LABEL_H - getattr(font, "size", 12)) // 2)
+    draw.text((tx, ty), filename, fill=(0, 0, 0), font=font)
+
+    out = Image.new("RGB", (img.width, LABEL_H + img.height), BG_COLOR)
+    out.paste(strip, (0, 0))
+    out.paste(img, (0, LABEL_H))
+    return out
+
+
+def _get_pred_grid(pred_obj: Any | None, split: str, index: int) -> List[List[int]] | None:
+    if not isinstance(pred_obj, dict):
+        return None
+    seq = pred_obj.get(split)
+    if not isinstance(seq, list) or index >= len(seq):
+        return None
+    item = seq[index]
+    if isinstance(item, dict):
+        grid = item.get("output")
+    else:
+        grid = item
+    if _is_grid(grid):
+        return grid
+    return None
+
+
+def _visualize_arc_task(task_path: Path, out_root: Path, pred_obj: Any | None = None) -> str:
     """Render a single ARC-style task JSON (with 'train' and 'test') to a PNG."""
     obj = json.loads(task_path.read_text())
     if not isinstance(obj, dict) or "train" not in obj or "test" not in obj:
@@ -224,7 +331,7 @@ def _visualize_arc_task(task_path: Path, out_root: Path) -> str:
 
     rows: List[Image.Image] = []
 
-    # Visualize train pairs: input -> output
+    # Visualize train pairs: input -> output (+ optional prediction)
     for i, pair in enumerate(obj.get("train", [])):
         if not isinstance(pair, dict) or "input" not in pair:
             continue
@@ -232,9 +339,19 @@ def _visualize_arc_task(task_path: Path, out_root: Path) -> str:
         out = pair.get("output") if _is_grid(pair.get("output", [])) else None
         label_left = f"train_{i}_input"
         label_right = f"train_{i}_output" if out is not None else None
-        rows.append(_two_panel(inp, out, label_left, label_right))
+        pred = _get_pred_grid(pred_obj, "train", i)
+        rows.append(
+            _io_pred_panel(
+                inp,
+                out,
+                pred,
+                label_left,
+                label_right,
+                f"train_{i}_pred",
+            )
+        )
 
-    # Visualize test pairs: input (and output if present)
+    # Visualize test pairs: input (and output if present) (+ optional prediction)
     for j, pair in enumerate(obj.get("test", [])):
         if not isinstance(pair, dict) or "input" not in pair:
             continue
@@ -242,14 +359,25 @@ def _visualize_arc_task(task_path: Path, out_root: Path) -> str:
         out = pair.get("output") if _is_grid(pair.get("output", [])) else None
         label_left = f"test_{j}_input"
         label_right = f"test_{j}_output" if out is not None else None
-        rows.append(_two_panel(inp, out, label_left, label_right))
+        pred = _get_pred_grid(pred_obj, "test", j)
+        rows.append(
+            _io_pred_panel(
+                inp,
+                out,
+                pred,
+                label_left,
+                label_right,
+                f"test_{j}_pred",
+            )
+        )
 
     if not rows:
         raise SystemExit("No train/test pairs with valid grids found to render.")
 
     out_path = out_root / f"{task_path.stem}.png"
     stacked = _stack_rows(rows)
-    return _write_png(stacked, out_path)
+    labeled = _label_with_filename(stacked, task_path.name)
+    return _write_png(labeled, out_path)
 
 def main():
     here = Path(__file__).resolve().parent
@@ -273,13 +401,42 @@ def main():
         default=OUT_DIR,
         help="Output directory for generated PNGs.",
     )
+    parser.add_argument(
+        "--index_base",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="Color index base: 0 for [0..9], 1 for [1..10]. Default: 1.",
+    )
+    parser.add_argument(
+        "--pred_file",
+        type=str,
+        default=None,
+        help="Optional JSON file with model predictions for a single task.",
+    )
+    parser.add_argument(
+        "--pred_dir",
+        type=str,
+        default=None,
+        help="Optional directory containing prediction JSON files matching task filenames.",
+    )
 
     args = parser.parse_args()
+
+    # Configure global index base for grid values.
+    global INDEX_BASE
+    INDEX_BASE = args.index_base
 
     out_root = Path(args.out_dir)
     if not out_root.is_absolute():
         out_root = here / out_root
     out_root.mkdir(parents=True, exist_ok=True)
+
+    pred_root = None
+    if args.pred_dir is not None:
+        pred_root = Path(args.pred_dir)
+        if not pred_root.is_absolute():
+            pred_root = here / pred_root
 
     if args.task_dir is not None:
         dir_path = Path(args.task_dir)
@@ -291,8 +448,16 @@ def main():
             raise SystemExit(f"No .json files found in directory: {dir_path}")
 
         for task_path in json_files:
+            pred_obj = None
+            if pred_root is not None:
+                pred_path = pred_root / task_path.name
+                if pred_path.is_file():
+                    try:
+                        pred_obj = json.loads(pred_path.read_text())
+                    except Exception:
+                        pred_obj = None
             try:
-                out_path = _visualize_arc_task(task_path, out_root)
+                out_path = _visualize_arc_task(task_path, out_root, pred_obj)
                 print("[ok]", out_path)
             except SystemExit as e:
                 print(f"[skip] {task_path}: {e}")
@@ -300,9 +465,27 @@ def main():
         task_path = Path(args.task_file)
         if not task_path.is_absolute():
             task_path = here / task_path
-        out_path = _visualize_arc_task(task_path, out_root)
+        pred_obj = None
+        if args.pred_file is not None:
+            pred_path = Path(args.pred_file)
+            if not pred_path.is_absolute():
+                pred_path = here / pred_path
+            if pred_path.is_file():
+                try:
+                    pred_obj = json.loads(pred_path.read_text())
+                except Exception:
+                    pred_obj = None
+        elif pred_root is not None:
+            pred_path = pred_root / task_path.name
+            if pred_path.is_file():
+                try:
+                    pred_obj = json.loads(pred_path.read_text())
+                except Exception:
+                    pred_obj = None
+        out_path = _visualize_arc_task(task_path, out_root, pred_obj)
         print("[ok]", out_path)
 
 if __name__ == "__main__":
     main()
+
 
